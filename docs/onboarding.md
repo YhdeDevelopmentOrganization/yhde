@@ -10,8 +10,9 @@ add-on) and install it in Godot with AssetLib, Import..., pick the zip,
 Install. There is no need to unzip it. Then enable YHDE under Project >
 Project Settings > Plugins and sign in from the YHDE panel.
 
-The add-on is also published in the public `YhdeDevelopmentOrganization/yhde-godot`
-repository, for the Godot Asset Library.
+Each release's signed add-on zip is also on the repository's releases page
+(https://github.com/YhdeDevelopmentOrganization/yhde/releases). The old
+`yhde-godot` repository is archived.
 
 ## 2. Releasing a New Add-on
 

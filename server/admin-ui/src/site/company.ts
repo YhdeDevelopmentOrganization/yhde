@@ -23,7 +23,7 @@ export const companyLine = () =>
 // without an address yet shows as "coming soon" and can't be clicked.
 export const SOCIAL = {
   discord: "",
-  github: "https://github.com/YhdeDevelopmentOrganization/yhde-godot",
+  github: "https://github.com/YhdeDevelopmentOrganization/yhde",
   youtube: "",
   x: "",
 }

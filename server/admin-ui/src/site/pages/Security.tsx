@@ -67,9 +67,10 @@ export function Security() {
 
           <h2 id="editor">The Godot add-on</h2>
           <ul>
-            <li>Add-on updates are only offered, never installed without your click. Every file is checked against the server's checksum first.</li>
+            <li>Add-on updates are only offered, never installed without your click, and only when they are signed as a YHDE release.</li>
+            <li>Files from teammates that can run code on your computer (plugins, native libraries, @tool scripts) wait until you accept them.</li>
             <li>Scripts built into scenes are code, so accepting them from teammates is off until you turn it on.</li>
-            <li>The add-on is free to read on <a href="https://github.com/YhdeDevelopmentOrganization/yhde-godot" rel="noreferrer">GitHub</a>.</li>
+            <li>YHDE is open source: the add-on and the server are on <a href="https://github.com/YhdeDevelopmentOrganization/yhde" rel="noreferrer">GitHub</a>.</li>
           </ul>
 
           <h2 id="staff">Our side</h2>

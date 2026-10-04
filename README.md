@@ -5,8 +5,8 @@ team works in the same Godot project at the same time: scene edits,
 properties, scripts and files show up for everyone as they happen.
 
 This repository holds the server, the website, the Godot add-on and its
-native core, tests and design docs. The add-on alone is published in
-`YhdeDevelopmentOrganization/yhde-godot`.
+native core, tests and design docs. The add-on, ready to install, is on the
+[releases page](https://github.com/YhdeDevelopmentOrganization/yhde/releases).
 
 ## How It Works
 

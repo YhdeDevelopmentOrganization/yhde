@@ -438,7 +438,7 @@ export function SocialLinks({ className }: { className?: string }) {
               toast.warning(NOT_YET[k], {
                 id: "social",
                 description: SOCIAL.github
-                  ? "For now, follow the add-on on GitHub."
+                  ? "For now, follow YHDE on GitHub: it is open source."
                   : undefined,
                 action: SOCIAL.github
                   ? {
