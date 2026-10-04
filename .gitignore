@@ -1,0 +1,34 @@
+# .NET
+server/**/bin/
+server/**/obj/
+# Asset blobs of a local development server
+server/**/data/blobs/
+
+# Godot
+.godot/
+client/godot/.godot/
+
+# GDExtension build output (built locally or by CI)
+client/gdextension/build*/
+client/godot/addons/yhde/bin/
+
+# Editor/OS noise
+.vs/
+.vscode/
+.idea/
+*.user
+.DS_Store
+
+# Server kit secrets and backups (deploy/yhde install)
+deploy/.env
+deploy/backups/
+deploy/updates/
+
+# Admin and join pages (server/admin-ui): dependencies and build output
+server/admin-ui/node_modules/
+server/admin-ui/dist/
+dist/
+
+# Release signing keys (client/package_addon.py --new-key): never commit a private key
+*private*.pem
+yhde-release-key/

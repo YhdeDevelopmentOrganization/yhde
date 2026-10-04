@@ -1,0 +1,125 @@
+# YHDE server stack: PostgreSQL + YHDE server + Caddy (HTTPS) + daily backups.
+# The log lives in Postgres, the project's file bytes in the `blobs` volume.
+# Managed by ./yhde (see docs/deployment.md). Settings come from .env, which
+# `./yhde install` generates; only Caddy is reachable from outside.
+name: yhde
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: yhde
+      POSTGRES_USER: yhde
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?run ./yhde install first}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yhde -d yhde"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging: *logging
+
+  server:
+    build: ../server
+    image: yhde-server:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      Yhde__ConnectionString: Host=db;Database=yhde;Username=yhde;Password=${DB_PASSWORD}
+      Yhde__AccessKey: ${ACCESS_KEY:?run ./yhde install first}
+      Yhde__BlobPath: /data/blobs
+      Yhde__MaxAssetBytes: ${MAX_ASSET_BYTES:-2147483648}
+      # The admin page password (emergency way in; staff sign in with accounts).
+      Yhde__AdminPassword: ${ADMIN_PASSWORD:-}
+      Yhde__BackupDir: /backups
+      # Updates approved on the admin page, applied by the server kit's timer.
+      Yhde__UpdatesDir: /updates
+      # The website's address (links in emails, sign-in return address).
+      Yhde__PublicUrl: ${PUBLIC_URL:-}
+      # Only YHDE's own servers are the official site (marketing pages, plans,
+      # early access, YHDE's legal pages). Everyone else's server shows who
+      # runs it instead (OPERATOR_*), and has no plans or limits.
+      Yhde__Site__Official: ${OFFICIAL_SITE:-false}
+      Yhde__Operator__Name: ${OPERATOR_NAME:-}
+      Yhde__Operator__Email: ${OPERATOR_EMAIL:-}
+      Yhde__Operator__PrivacyUrl: ${PRIVACY_URL:-}
+      Yhde__Operator__TermsUrl: ${TERMS_URL:-}
+      # Making a team needs an access code until payments start (teams.md).
+      Yhde__TeamsNeedCode: ${TEAMS_NEED_CODE:-false}
+      # Sign-in with GitHub and Google (ADR 0015); off while empty. Set with
+      # ./yhde set GITHUB_CLIENT_ID … (see docs/deployment.md).
+      Yhde__Auth__GitHub__ClientId: ${GITHUB_CLIENT_ID:-}
+      Yhde__Auth__GitHub__ClientSecret: ${GITHUB_CLIENT_SECRET:-}
+      Yhde__Auth__Google__ClientId: ${GOOGLE_CLIENT_ID:-}
+      Yhde__Auth__Google__ClientSecret: ${GOOGLE_CLIENT_SECRET:-}
+      # Email for account confirmation and password resets (any SMTP service).
+      # Without it, those emails are written to the server log instead.
+      Yhde__Smtp__Host: ${SMTP_HOST:-}
+      Yhde__Smtp__Port: ${SMTP_PORT:-587}
+      Yhde__Smtp__User: ${SMTP_USER:-}
+      Yhde__Smtp__Password: ${SMTP_PASSWORD:-}
+      Yhde__Smtp__From: ${SMTP_FROM:-}
+    volumes:
+      - blobs:/data/blobs
+      - addon:/data/addon # the editor add-on handed out on the join page
+      - ./backups:/backups:ro # listed on the admin page
+      - ./updates:/updates # update status from the server kit, update requests to it
+    read_only: true
+    tmpfs:
+      - /tmp
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      YHDE_SITES: ${SITES:?run ./yhde update first}
+      YHDE_DOMAIN: ${DOMAIN}
+      YHDE_REDIRECTS: ${REDIRECT_FROM:-http://redirect.localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging: *logging
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGUSER: yhde
+      PGDATABASE: yhde
+      PGPASSWORD: ${DB_PASSWORD}
+      KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - ./backups:/backups
+      - blobs:/blobs:ro
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    logging: *logging
+
+volumes:
+  db-data:
+  blobs:
+  addon:
+  caddy-data:
+  caddy-config:

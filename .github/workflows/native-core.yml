@@ -1,0 +1,59 @@
+name: Build YHDE native core
+
+# Builds the editor-only GDExtension for every desktop platform. Download the
+# "yhde-native-*" artifacts into client/godot/addons/yhde/bin/.
+#
+# Runs only when the native code changes, once per change (a push to main or
+# a pull request, not both), and reuses the compiled godot-cpp between runs:
+# macOS minutes count 10x and Windows 2x against the Actions allowance.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "client/gdextension/**"
+      - ".github/workflows/native-core.yml"
+  pull_request:
+    paths:
+      - "client/gdextension/**"
+      - ".github/workflows/native-core.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            configure: ""
+          - name: windows-x86_64
+            os: windows-latest
+            configure: "-A x64"
+          - name: macos-universal
+            os: macos-14
+            configure: "'-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64'"
+    steps:
+      - uses: actions/checkout@v4
+
+      # The godot-cpp bindings are most of the build; keep them between runs.
+      - uses: actions/cache@v4
+        with:
+          path: build
+          key: native-${{ matrix.name }}-${{ hashFiles('client/gdextension/CMakeLists.txt') }}
+
+      - name: Configure
+        shell: bash
+        run: cmake -S client/gdextension -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.configure }}
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release --target yhde --parallel 4
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yhde-native-${{ matrix.name }}
+          path: client/godot/addons/yhde/bin/
+          if-no-files-found: error

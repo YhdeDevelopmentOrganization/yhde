@@ -1,0 +1,24 @@
+# HTTPS in front of the YHDE server. Caddy obtains and renews the certificates
+# for every address in $YHDE_SITES (the domain, plus earlier domains that
+# editors may still use) and passes WebSockets through.
+{$YHDE_SITES} {
+	header {
+		# Browsers use HTTPS only from here on, even if someone types http://.
+		Strict-Transport-Security "max-age=31536000"
+		# No other site may show these pages in a frame (clickjacking).
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		# Features the site never uses stay switched off.
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), usb=()"
+		# Don't advertise the web server.
+		-Server
+	}
+	reverse_proxy server:8080
+}
+
+# Other addresses that only send visitors on to the site, such as the bare
+# domain and www (./yhde set REDIRECT_FROM example.com,www.example.com).
+# The default is a local name that needs no certificate.
+{$YHDE_REDIRECTS} {
+	redir https://{$YHDE_DOMAIN}{uri} permanent
+}

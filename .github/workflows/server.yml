@@ -1,0 +1,38 @@
+name: Server
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - "deploy/**"
+      - ".github/workflows/server.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - "deploy/**"
+      - ".github/workflows/server.yml"
+  workflow_dispatch:
+
+jobs:
+  server:
+    name: server tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - run: dotnet test server --configuration Release
+
+  server-image:
+    name: server image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t yhde-server:ci server
+      - name: Validate the deploy kit
+        run: |
+          bash -n deploy/yhde
+          sh -n deploy/backup.sh
+          DOMAIN=example.com SITES=example.com DB_PASSWORD=ci ACCESS_KEY=ci docker compose -f deploy/compose.yaml config -q

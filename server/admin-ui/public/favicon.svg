@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="2.7 -0.8 62.6 62.6">
+<title>YHDE</title>
+<style>.ink{stroke:#131315}@media (prefers-color-scheme:dark){.ink{stroke:#f4f2ec}}</style>
+<defs>
+  <mask id="cut-under-green" maskUnits="userSpaceOnUse" x="2.7" y="-0.8" width="62.6" height="62.6"><rect x="2.7" y="-0.8" width="62.6" height="62.6" fill="#fff"/><path d="M28.5 36v19.55l5.175-4.83 3.565 7.82 3.45-1.495-3.45-7.705h6.785Z" fill="none" stroke="#000" stroke-width="4.2" stroke-linejoin="round"/><path d="M58.223 27.006a27 8.5-20 0 1-45.989 16.738" fill="none" stroke="#000" stroke-width="7.5" stroke-linejoin="round"/><path d="M58 25V5.45l-5.175 4.83-3.565-7.82-3.45 1.495 3.45 7.705h-6.785Z" fill="none" stroke="#000" stroke-width="4.2" stroke-linejoin="round"/></mask>
+  <mask id="cut-green" maskUnits="userSpaceOnUse" x="2.7" y="-0.8" width="62.6" height="62.6"><rect x="2.7" y="-0.8" width="62.6" height="62.6" fill="#fff"/><path d="M58.223 27.006a27 8.5-20 0 1-45.989 16.738" fill="none" stroke="#000" stroke-width="7.5" stroke-linejoin="round"/><path d="M58 25V5.45l-5.175 4.83-3.565-7.82-3.45 1.495 3.45 7.705h-6.785Z" fill="none" stroke="#000" stroke-width="4.2" stroke-linejoin="round"/></mask>
+  <mask id="cut-front" maskUnits="userSpaceOnUse" x="2.7" y="-0.8" width="62.6" height="62.6"><rect x="2.7" y="-0.8" width="62.6" height="62.6" fill="#fff"/><path d="M58 25V5.45l-5.175 4.83-3.565-7.82-3.45 1.495 3.45 7.705h-6.785Z" fill="none" stroke="#000" stroke-width="4.2" stroke-linejoin="round"/></mask>
+</defs>
+<g id="Behind-green" mask="url(#cut-under-green)">
+  <path id="Ring-back" d="M8.628 41.234a27 8.5-20 0 1 50.744-18.469" fill="none" class="ink" stroke-width="3.5" stroke-linecap="round"/>
+  <circle id="Planet" cx="34" cy="32" r="14" fill="#7cc4ff"/>
+</g>
+<path id="Cursor-green" mask="url(#cut-green)" d="M28.5 36v19.55l5.175-4.83 3.565 7.82 3.45-1.495-3.45-7.705h6.785Z" fill="#5ee6a8" stroke="#5ee6a8" stroke-width="1.5" stroke-linejoin="round"/>
+<path id="Ring-front" mask="url(#cut-front)" d="M59.372 22.765a27 8.5-20 0 1-50.744 18.47" fill="none" class="ink" stroke-width="3.5" stroke-linecap="round"/>
+<path id="Cursor-coral" d="M58 25V5.45l-5.175 4.83-3.565-7.82-3.45 1.495 3.45 7.705h-6.785Z" fill="#ff8a65" stroke="#ff8a65" stroke-width="1.5" stroke-linejoin="round"/>
+</svg>

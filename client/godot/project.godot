@@ -1,0 +1,19 @@
+; Godot 4.7 project file for the YHDE editor integration (tested on 4.7.2).
+; This project is the host for the GDExtension and the editor plugin.
+; It is NOT the game project: developers open their own game project.
+; The YHDE plugin hooks into the Godot editor via EditorPlugin; see
+; ../README.md and ../../docs/editor_client.md.
+
+config_version=5
+
+[application]
+
+config/name="YHDE"
+config/description="Your Hosted Development Environment: collaborative Godot editor integration"
+config/version="0.0.1"
+run/main_scene=""
+config/features=PackedStringArray("4.7", "Forward Plus")
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/yhde/plugin.cfg")

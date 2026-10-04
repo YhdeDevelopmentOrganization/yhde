@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+# YHDE server helper for a single VPS (tested target: Ubuntu 24.04, e.g. Hetzner).
+#
+#   ./yhde install <domain>   set up or repair everything; safe to re-run
+#   ./yhde key                show the server address, admin page and keys
+#   ./yhde admin-password     make a new admin page password
+#   ./yhde status             containers and health
+#   ./yhde logs [service]     follow logs (server, caddy, db, backup)
+#   ./yhde update             pull the latest code and restart
+#   ./yhde backup             take a database backup now (into deploy/backups)
+#   ./yhde new-key            replace the server access key
+#   ./yhde updater-tick       (run by a timer) look for updates on GitHub and
+#                             apply one when the admin page asked for it
+#   ./yhde test-branches N    make N empty branches for a load test; prints their ids
+#   ./yhde set KEY value      store a setting (GITHUB_CLIENT_ID, SMTP_HOST...) and restart
+set -euo pipefail
+
+# YHDE_DIR: set when the updater runs from a copy of this script (see below).
+DIR="${YHDE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+ENV_FILE="$DIR/.env"
+cd "$DIR"
+
+bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+info() { printf '  %s\n' "$*"; }
+warn() { printf '\033[33m! %s\033[0m\n' "$*" >&2; }
+die() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+need_root() { [[ $EUID -eq 0 ]] || die "Run as root (or with sudo)."; }
+compose() { docker compose --project-directory "$DIR" "$@"; }
+env_get() { if [[ -f "$ENV_FILE" ]]; then sed -n "s/^$1=//p" "$ENV_FILE" | tail -1; fi; }
+env_set() {
+	local key=$1 value=$2 tmp
+	touch "$ENV_FILE"; chmod 600 "$ENV_FILE"
+	# Rewritten without sed, so values with any characters stay intact.
+	tmp=$(mktemp "$ENV_FILE.XXXXXX")
+	grep -v "^$key=" "$ENV_FILE" > "$tmp" || true
+	printf '%s=%s\n' "$key" "$value" >> "$tmp"
+	chmod 600 "$tmp"
+	mv "$tmp" "$ENV_FILE"
+}
+random_hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+
+# The addresses Caddy serves: the domain first, then earlier domains that
+# editors may still be set up with (they keep working after a move).
+sites_for() {
+	local domain=$1 sites old
+	sites=$domain
+	IFS=', ' read -r -a old <<< "$(env_get SITES)"
+	[[ ${#old[@]} -gt 0 ]] || old=("$(env_get DOMAIN)")
+	for s in "${old[@]}"; do
+		[[ -n "$s" && "$s" != "$domain" ]] && sites="$sites, $s"
+	done
+	echo "$sites"
+}
+
+# Settings the website needs, from the domain (servers installed before them).
+site_settings() {
+	local domain=$1
+	[[ -n "$(env_get SITES)" ]] || env_set SITES "$domain"
+	[[ -n "$(env_get PUBLIC_URL)" ]] || env_set PUBLIC_URL "https://$domain"
+}
+
+install_docker() {
+	if docker compose version > /dev/null 2>&1; then return; fi
+	command -v apt-get > /dev/null || die "Install Docker Engine with the compose plugin, then re-run."
+	bold "Installing Docker"
+	apt-get update -q
+	DEBIAN_FRONTEND=noninteractive apt-get install -y -q docker.io docker-compose-v2 curl
+	systemctl enable --now docker
+}
+
+check_dns() {
+	local domain=$1 resolved mine
+	resolved=$(getent ahosts "$domain" | awk '{print $1}' | sort -u || true)
+	mine=$(hostname -I 2> /dev/null | tr ' ' '\n' | sed '/^$/d' | sort -u || true)
+	if [[ -z "$resolved" ]]; then
+		warn "$domain does not resolve yet. Point its A record (and AAAA for IPv6) at this server; HTTPS starts once it does."
+	elif [[ -n "$mine" ]] && ! grep -qxF -f <(printf '%s\n' "$mine") <<< "$resolved"; then
+		warn "$domain points to $(echo $resolved), not to this server ($(echo $mine)). HTTPS needs the DNS record to point here."
+	fi
+}
+
+wait_healthy() {
+	local domain=$1
+	printf '  Waiting for https://%s ' "$domain"
+	for _ in $(seq 1 60); do
+		if curl -fsS --max-time 5 "https://$domain/health" 2> /dev/null | grep -q Healthy; then
+			echo "✓"
+			return 0
+		fi
+		printf '.'
+		sleep 3
+	done
+	echo
+	return 1
+}
+
+show_key() {
+	local domain key
+	domain=$(env_get DOMAIN); key=$(env_get ACCESS_KEY)
+	[[ -n "$domain" && -n "$key" ]] || die "Not installed yet: run ./yhde install <domain>"
+	echo
+	bold "Website"
+	info "Open      https://$domain (people sign up here and sign in from Godot)"
+	echo
+	bold "Admin page"
+	info "Open      https://$domain/admin"
+	info "Password  $(env_get ADMIN_PASSWORD) (emergency only: staff sign in with their accounts)"
+	echo
+	bold "Server key (opens every project; for the operator only)"
+	info "Server    wss://$domain/ws"
+	info "Key       $key"
+	echo
+	info "Keep the server key and the admin password to yourself."
+}
+
+cmd_install() {
+	need_root
+	local domain=${1:-$(env_get DOMAIN)}
+	[[ -n "$domain" ]] || die "Usage: ./yhde install <domain>   (e.g. yhde.example.com)"
+	[[ "$domain" =~ ^[A-Za-z0-9.-]+$ ]] || die "\"$domain\" is not a domain name."
+
+	install_docker
+	bold "Configuring $domain"
+	env_set SITES "$(sites_for "$domain")"
+	env_set DOMAIN "$domain"
+	env_set PUBLIC_URL "https://$domain"
+	[[ -n "$(env_get DB_PASSWORD)" ]] || env_set DB_PASSWORD "$(random_hex 24)"
+	[[ -n "$(env_get ACCESS_KEY)" ]] || env_set ACCESS_KEY "$(random_hex 24)"
+	[[ -n "$(env_get ADMIN_PASSWORD)" ]] || env_set ADMIN_PASSWORD "$(random_hex 16)"
+	backups_dir
+	install_updater
+	check_dns "$domain"
+
+	bold "Starting (the first build takes a few minutes)"
+	compose up -d --build --remove-orphans
+	if ! wait_healthy "$domain"; then
+		warn "Not reachable over HTTPS yet. Check that the domain points here and ports 80/443 are open,"
+		warn "then look at ./yhde logs caddy and ./yhde logs server."
+		exit 1
+	fi
+	show_key
+}
+
+# Backups stay private, except that the server (user 1654 in its container)
+# may list them for the admin page.
+backups_dir() {
+	mkdir -p "$DIR/backups"
+	chown root:1654 "$DIR/backups"
+	chmod 750 "$DIR/backups"
+}
+
+# Updates approved on the admin page (deployment.md). The server writes
+# updates/request (a commit id); this timer, on the host, does the rest. The
+# server itself never gets access to Docker.
+updates_dir() {
+	mkdir -p "$DIR/updates"
+	chown root:1654 "$DIR/updates"
+	chmod 770 "$DIR/updates"
+}
+
+install_updater() {
+	updates_dir
+	cat > /etc/systemd/system/yhde-updater.service <<EOF
+[Unit]
+Description=YHDE: look for updates, apply the ones approved on the admin page
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=$DIR/yhde updater-tick
+EOF
+	cat > /etc/systemd/system/yhde-updater.timer <<EOF
+[Unit]
+Description=YHDE update checker
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target
+EOF
+	systemctl daemon-reload
+	systemctl enable --now yhde-updater.timer > /dev/null 2>&1 || warn "Could not start the update checker timer."
+}
+
+# The admin page reads updates/status.json: this version, the newer commits
+# on GitHub, a running update and how the last one went.
+write_update_status() {
+	local repo="$DIR/.." state=${1:-}
+	python3 - "$repo" "$DIR/updates" "$state" <<'PY'
+import json, os, subprocess, sys, datetime
+repo, out, state = sys.argv[1], sys.argv[2], sys.argv[3]
+def git(*args):
+    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True).stdout.strip()
+def commits(spec):
+    rows = []
+    for line in git("log", "--format=%H%x1f%an%x1f%aI%x1f%s", spec).splitlines():
+        sha, author, date, subject = (line.split("\x1f") + ["", "", "", ""])[:4]
+        rows.append({"sha": sha, "author": author, "date": date, "subject": subject})
+    return rows
+current = commits("-1")
+upstream = git("rev-parse", "--abbrev-ref", "@{u}") or "origin/main"
+status = {
+    "checkedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "branch": upstream,
+    "current": current[0] if current else None,
+    "available": commits("HEAD.." + upstream)[:50],
+    "updating": json.loads(state) if state else None,
+    "fetchError": open(os.path.join(out, ".fetch-error")).read().strip() if os.path.exists(os.path.join(out, ".fetch-error")) else None,
+    "last": json.load(open(os.path.join(out, "last.json"))) if os.path.exists(os.path.join(out, "last.json")) else None,
+}
+tmp = os.path.join(out, "status.json.tmp")
+json.dump(status, open(tmp, "w"))
+os.chmod(tmp, 0o640)
+os.replace(tmp, os.path.join(out, "status.json"))
+PY
+	chown root:1654 "$DIR/updates/status.json" 2> /dev/null || true
+}
+
+cmd_updater_tick() {
+	need_root
+	# Run from a copy: updating replaces this very file, which bash reads as it goes.
+	if [[ -z "${YHDE_TICK_COPY:-}" ]]; then
+		local copy; copy=$(mktemp /tmp/yhde-tick.XXXXXX)
+		cp "$0" "$copy"
+		YHDE_TICK_COPY=1 YHDE_DIR="$DIR" exec bash "$copy" updater-tick
+	fi
+	trap 'rm -f "$0"' EXIT
+	exec 9> /run/yhde-updater.lock
+	flock -n 9 || exit 0
+	updates_dir
+	local U="$DIR/updates" repo="$DIR/.."
+
+	# Look on GitHub at most every 10 minutes, or now when asked.
+	if [[ -f "$U/check" || ! -f "$U/.fetched" || -n "$(find "$U/.fetched" -mmin +10 2> /dev/null)" ]]; then
+		if git -C "$repo" fetch -q origin 2> "$U/.fetch-error"; then rm -f "$U/.fetch-error"; fi
+		touch "$U/.fetched"
+		rm -f "$U/check"
+	fi
+	write_update_status
+
+	[[ -f "$U/request" ]] || return 0
+	local target; target=$(head -c 64 "$U/request" | tr -cd '0-9a-f')
+	rm -f "$U/request"
+	local from; from=$(git -C "$repo" rev-parse HEAD)
+	local started; started=$(date -u +%FT%TZ)
+	finish() {
+		python3 -c 'import json,sys; json.dump({"ok": sys.argv[1] == "1", "from": sys.argv[2], "to": sys.argv[3], "at": sys.argv[4], "message": sys.argv[5]}, open(sys.argv[6], "w"))' \
+			"$1" "$from" "$target" "$(date -u +%FT%TZ)" "$2" "$U/last.json"
+		chown root:1654 "$U/last.json"; chmod 640 "$U/last.json"
+		write_update_status
+	}
+	# Only a newer commit of the branch this server follows.
+	if [[ ${#target} -ne 40 ]] || ! git -C "$repo" merge-base --is-ancestor HEAD "$target" 2> /dev/null \
+		|| ! git -C "$repo" merge-base --is-ancestor "$target" '@{u}' 2> /dev/null; then
+		finish 0 "Not a newer version of this branch. Nothing changed."
+		return 0
+	fi
+	write_update_status "{\"target\": \"$target\", \"startedAt\": \"$started\"}"
+	{
+		echo "== $(date -u +%FT%TZ) update $from -> $target"
+		compose exec -T backup /bin/sh /backup.sh once || echo "(backup failed; continuing)"
+		git -C "$repo" merge --ff-only "$target"
+	} >> "$U/update.log" 2>&1 || { finish 0 "Could not switch to that version. Nothing changed (see deploy/updates/update.log)."; return 0; }
+	# Settings that newer versions need on servers installed before them.
+	[[ -n "$(env_get ADMIN_PASSWORD)" ]] || env_set ADMIN_PASSWORD "$(random_hex 16)"
+	site_settings "$(env_get DOMAIN)"
+	backups_dir
+	if compose up -d --build --remove-orphans >> "$U/update.log" 2>&1 && wait_healthy "$(env_get DOMAIN)" >> "$U/update.log" 2>&1; then
+		docker image prune -f > /dev/null 2>&1 || true
+		finish 1 "Updated."
+		return 0
+	fi
+	# It did not build or did not start healthy: back to the version that worked.
+	echo "== rolling back to $from" >> "$U/update.log"
+	git -C "$repo" reset -q --hard "$from" >> "$U/update.log" 2>&1
+	compose up -d --build --remove-orphans >> "$U/update.log" 2>&1 || true
+	finish 0 "It failed to build or start, so the server went back (see deploy/updates/update.log)."
+}
+
+cmd_update() {
+	need_root
+	bold "Updating"
+	git -C "$DIR/.." pull --ff-only
+	# Settings that newer versions need on servers installed before them.
+	[[ -n "$(env_get ADMIN_PASSWORD)" ]] || env_set ADMIN_PASSWORD "$(random_hex 16)"
+	site_settings "$(env_get DOMAIN)"
+	backups_dir
+	install_updater
+	compose up -d --build --remove-orphans
+	docker image prune -f > /dev/null
+	wait_healthy "$(env_get DOMAIN)" || die "The server did not come back; see ./yhde logs server"
+}
+
+cmd_status() {
+	compose ps
+	local domain; domain=$(env_get DOMAIN)
+	if [[ -n "$domain" ]]; then
+		printf '\nhttps://%s/health: ' "$domain"
+		curl -fsS --max-time 5 "https://$domain/health" || echo "unreachable"
+		echo
+	fi
+	local last; last=$(ls -1t "$DIR"/backups/yhde-*.dump 2> /dev/null | head -1 || true)
+	echo "Latest backup: ${last:-none yet}"
+}
+
+cmd_admin_password() {
+	need_root
+	env_set ADMIN_PASSWORD "$(random_hex 16)"
+	compose up -d server
+	show_key
+}
+
+cmd_new_key() {
+	need_root
+	env_set ACCESS_KEY "$(random_hex 24)"
+	compose up -d server
+	show_key
+}
+
+# Branches only a load test uses, so its edits never touch a real project
+# (docs/capacity.md). They stay in the log like everything else.
+cmd_test_branches() {
+	need_root
+	local n=${1:-100}
+	[[ "$n" =~ ^[0-9]+$ ]] && ((n >= 1 && n <= 2000)) || die "Usage: ./yhde test-branches <1-2000>"
+	compose exec -T db psql -U yhde -d yhde -tAq -c \
+		"INSERT INTO branches (branch_id, project_id, name) SELECT gen_random_uuid(), project_id, 'loadtest-' || gen_random_uuid() FROM projects, generate_series(1, $n) WHERE name = 'default' RETURNING branch_id" |
+		grep -E '^[0-9a-f-]{36}$'
+}
+
+# Settings people may change; secrets stay in .env (never in git).
+SETTABLE="OFFICIAL_SITE OPERATOR_NAME OPERATOR_EMAIL PRIVACY_URL TERMS_URL PUBLIC_URL GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM REDIRECT_FROM TEAMS_NEED_CODE"
+cmd_set() {
+	need_root
+	local key=${1:-} value=${2:-}
+	[[ -n "$key" ]] || die "Usage: ./yhde set KEY value   (keys: $SETTABLE)"
+	[[ " $SETTABLE " == *" $key "* ]] || die "$key can't be set this way. Keys: $SETTABLE"
+	if [[ $key == OPERATOR_NAME ]]; then
+		# A name may have spaces ("Pixel Studio"); still no quotes or $.
+		[[ "$value" =~ ^[[:alnum:]\ ._@+:/=,\(\)\&-]*$ ]] || die "Use letters, digits, spaces and . , - & ( ) in the name (no quotes or \$)."
+	else
+		[[ "$value" =~ ^[A-Za-z0-9._@+:/=,-]*$ ]] || die "That value has characters the settings file can't hold (spaces, quotes, \$…)."
+	fi
+	if [[ $key == REDIRECT_FROM ]]; then
+		# Caddy wants "a, b"; DNS names are lower case. Only Caddy restarts.
+		value=$(tr 'A-Z' 'a-z' <<< "${value//,/, }")
+		env_set "$key" "$value"
+		info "$key saved."
+		compose up -d caddy
+		return
+	fi
+	env_set "$key" "$value"
+	info "$key saved."
+	compose up -d server
+	wait_healthy "$(env_get DOMAIN)" || die "The server did not come back; see ./yhde logs server"
+}
+
+case "${1:-help}" in
+	install) shift; cmd_install "$@" ;;
+	key) need_root; show_key ;;
+	status) need_root; cmd_status ;;
+	logs) need_root; compose logs -f --tail=200 "${2:-server}" ;;
+	update) cmd_update ;;
+	backup) need_root; compose exec backup /bin/sh /backup.sh once ;;
+	new-key) cmd_new_key ;;
+	admin-password) cmd_admin_password ;;
+	updater-tick) cmd_updater_tick ;;
+	test-branches) shift; cmd_test_branches "$@" ;;
+	set) shift; cmd_set "$@" ;;
+	*) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac

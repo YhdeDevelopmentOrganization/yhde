@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="-1.98 -5.48 71.97 71.97">
+<title>YHDE mark</title>
+  <rect id="Background" x="-1.98" y="-5.48" width="71.97" height="71.97" fill="#131315"/>
+  <path id="Ring-back" d="M8.628 41.234a27 8.5-20 0 1 50.744-18.469" fill="none" stroke="#f4f2ec" stroke-width="3.5" stroke-linecap="round"/>
+  <circle id="Planet" cx="34" cy="32" r="14" fill="#7cc4ff"/>
+  <g id="Cursor-green" stroke-linejoin="round">
+    <path id="Cursor-green-outline" d="M28.5 36v19.55l5.175-4.83 3.565 7.82 3.45-1.495-3.45-7.705h6.785Z" fill="none" stroke="#131315" stroke-width="4.2"/>
+    <path id="Cursor-green-fill" d="M28.5 36v19.55l5.175-4.83 3.565 7.82 3.45-1.495-3.45-7.705h6.785Z" fill="#5ee6a8" stroke="#5ee6a8" stroke-width="1.5"/>
+  </g>
+  <path id="Ring-front-gap" d="M58.223 27.006a27 8.5-20 0 1-45.989 16.738" fill="none" stroke="#131315" stroke-width="7.5"/>
+  <path id="Ring-front" d="M59.372 22.765a27 8.5-20 0 1-50.744 18.47" fill="none" stroke="#f4f2ec" stroke-width="3.5" stroke-linecap="round"/>
+  <g id="Cursor-coral" stroke-linejoin="round">
+    <path id="Cursor-coral-outline" d="M58 25V5.45l-5.175 4.83-3.565-7.82-3.45 1.495 3.45 7.705h-6.785Z" fill="none" stroke="#131315" stroke-width="4.2"/>
+    <path id="Cursor-coral-fill" d="M58 25V5.45l-5.175 4.83-3.565-7.82-3.45 1.495 3.45 7.705h-6.785Z" fill="#ff8a65" stroke="#ff8a65" stroke-width="1.5"/>
+  </g>
+</svg>

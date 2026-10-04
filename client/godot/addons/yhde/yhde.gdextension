@@ -1,0 +1,13 @@
+[configuration]
+entry_symbol = "yhde_library_init"
+compatibility_minimum = "4.7"
+reloadable = false
+
+[libraries]
+; The YHDE core is editor-only (it hooks the Godot editor), so only "editor"
+; builds exist.
+linux.editor.x86_64 = "res://addons/yhde/bin/libyhde.linux.editor.x86_64.so"
+linux.editor.arm64 = "res://addons/yhde/bin/libyhde.linux.editor.arm64.so"
+windows.editor.x86_64 = "res://addons/yhde/bin/libyhde.windows.editor.x86_64.dll"
+windows.editor.arm64 = "res://addons/yhde/bin/libyhde.windows.editor.arm64.dll"
+macos.editor = "res://addons/yhde/bin/libyhde.macos.editor.universal.dylib"
