@@ -40,7 +40,7 @@ const char *kDefaultUrl = "ws://127.0.0.1:5000/ws";
 const char *kDefaultProject = "ffffffff-0000-0000-0000-000000000001";
 const char *kDefaultBranch = "ffffffff-0000-0000-0000-000000000002";
 // Keep in step with addons/yhde/plugin.cfg and the server's ServerInfo.Version.
-const char *kAddonVersion = "0.5.0";
+const char *kAddonVersion = "0.6.0";
 constexpr size_t kMaxSocialBody = 64 * 1024;
 
 constexpr double kPresenceInterval = 1.0 / 15.0;

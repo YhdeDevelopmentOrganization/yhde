@@ -13,6 +13,29 @@ type Release = { version: string; date: string; title: string; groups: Group[] }
 // the admin page come before these and replace a version they share.
 const HISTORY: Release[] = [
   {
+    version: "0.6.0",
+    date: "2026-10-04",
+    title: "Open source, and TileSets that sync",
+    groups: [
+      {
+        tag: "new",
+        items: [
+          "YHDE is open source: anyone can run their own server for their team. It shows its own name and legal pages and has no plans or limits beyond its disk.",
+          "Files from teammates that can run code on your computer (plugins, native libraries, @tool scripts) wait in the YHDE panel until you accept them.",
+          "Add-on updates are installed only when they are signed as a YHDE release, whichever server offers them.",
+        ],
+      },
+      {
+        tag: "fixed",
+        items: [
+          "TileSets sync properly: new sources, tiles, collision polygons, terrains and custom data reach your teammates, and so do removed and moved tiles, removed layers and patterns.",
+          "Painting on a TileMapLayer no longer bounces back from teammates, and the old TileMap node keeps its layers in sync.",
+          "Removed curve points reach your teammates.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.5.0",
     date: "2026-09-28",
     title: "People belong to projects",

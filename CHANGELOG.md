@@ -4,6 +4,35 @@ What changed in each YHDE release. The website's "What's new" page shows the
 same history (`server/admin-ui/src/site/pages/Changelog.tsx`), plus release
 notes published on the admin page.
 
+## v0.6.0 (2026-10-04)
+
+YHDE is open source now, and anyone can run their own server
+(docs/setup_your_server.md). Everyone in a project should move to this
+add-on together: an older add-on misses tiles and layers that a newer one
+removes. Then update the server.
+
+### Godot add-on
+
+- TileSets sync properly: new sources, tiles, alternative tiles, collision
+  polygons, terrains, custom data, navigation and occlusion all reach your
+  teammates, and so do removed and moved tiles, removed layers and patterns.
+  Painting on a TileMapLayer no longer bounces back from teammates.
+- The old TileMap node syncs added and removed layers and keeps layer names.
+- Removed curve points reach teammates.
+- Files from teammates that can run code on your computer (plugins, native
+  libraries, @tool scripts, build files) wait in the YHDE panel until you
+  accept them. "Always trust this project" accepts from then on.
+- Add-on updates are installed only when they are signed as a YHDE release,
+  whichever server offers them, and never an older version.
+
+### Server and website
+
+- A server you run yourself shows your own name, contact and privacy and
+  terms pages, has no plans, prices or limits beyond its disk, and says
+  "Powered by YHDE". YHDE's own site sets OFFICIAL_SITE and is unchanged.
+- New server settings: OFFICIAL_SITE, OPERATOR_NAME, OPERATOR_EMAIL,
+  PRIVACY_URL, TERMS_URL.
+
 ## v0.5.0 (2026-09-28)
 
 Update the server before handing out this add-on: it needs the new project
