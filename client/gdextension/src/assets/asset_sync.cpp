@@ -107,7 +107,7 @@ String AssetSync::exclusion_reason(const String &path) {
 		char32_t c = rel[i];
 		if (c < 0x20 || c == 0x7F) return "its name has a control character in it"; // Windows cannot store these
 	}
-	if (rel.contains("\\") || rel.contains(":") || rel.contains(String::chr(0))) return "its name has \ or : in it";
+	if (rel.contains("\\") || rel.contains(":")) return "its name has \\ or : in it";
 	// Case-insensitive: on Windows and macOS "Addons/YHDE/..." is the same folder.
 	if (rel.to_lower().begins_with("addons/yhde/")) return "skip";
 	if (is_imported_output(path)) {

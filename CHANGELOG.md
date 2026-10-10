@@ -4,6 +4,14 @@ What changed in each YHDE release. The website's "What's new" page shows the
 same history (`server/admin-ui/src/site/pages/Changelog.tsx`), plus release
 notes published on the admin page.
 
+## v0.6.6 (2026-10-11)
+
+### Godot add-on
+
+- Fixes a flood of "Unicode parsing error ... Unexpected NUL character"
+  messages while connected (0.6.5 printed one for every project file, every
+  second), which could make the editor unresponsive in big projects.
+
 ## v0.6.5 (2026-10-10)
 
 A stability release. Update the server and the add-on together: an add-on

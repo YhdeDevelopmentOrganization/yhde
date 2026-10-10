@@ -13,6 +13,19 @@ type Release = { version: string; date: string; title: string; groups: Group[] }
 // the admin page come before these and replace a version they share.
 const HISTORY: Release[] = [
   {
+    version: "0.6.6",
+    date: "2026-10-11",
+    title: "Quiet console",
+    groups: [
+      {
+        tag: "fixed",
+        items: [
+          "No more flood of \"Unexpected NUL character\" errors in the Godot console while connected, which could slow big projects down.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.6.5",
     date: "2026-10-10",
     title: "Stability: no more instance crashes or stalled projects",
