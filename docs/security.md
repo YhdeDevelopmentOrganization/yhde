@@ -145,8 +145,17 @@ until the person accepts them in the YHDE panel (`AssetSync`):
 - Native code and build files: `.gdextension`, `.dll`, `.so`, `.dylib`,
   `.exe`, scripts like `.bat`/`.sh`/`.ps1`, MSBuild files (`.csproj`,
   `.props`, `.targets`, `.sln`) and anything inside a `.framework` or `.app`.
-- Scripts that run in the editor: GDScript with `@tool` (also built into a
-  scene or resource) and C# with `[Tool]`.
+- Scripts that run in the editor: GDScript with `@tool` and C# with
+  `[Tool]` (in any spelling the compiler accepts, such as `[ Tool ]` or
+  `[Godot.Tool]`), and tokenized GDScript (`.gdc`), which cannot be read as
+  text.
+- Resources with a `@tool` script built in. A file counts as a resource by
+  its content, not its name: anything that starts with `RSRC` or `[gd_` is
+  searched, whatever its extension (`.material`, `.theme`, `.anim` ...),
+  because Godot loads a resource by its header. Compressed binary resources
+  (`RSCC`) hide their content, so they are always held.
+- `project.godot` is applied as it comes. When it changes the autoloads, the
+  panel says so, because their scripts run when the game is played.
 - Bytes already in the project as code (a move, a copy) are not held; a
   harmless file renamed into code (`notes.txt` to `lib.dll`) is.
 - While held, the file is neither written nor treated as a local change, so

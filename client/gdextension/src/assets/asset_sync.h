@@ -48,6 +48,8 @@ public:
 	void set_hooks(Hooks hooks) { hooks_ = std::move(hooks); }
 	void set_debug(bool on) { debug_ = on; }
 	void configure(const godot::String &state_file);
+	// The project file transfers are for (sent as X-YHDE-Project).
+	void set_project(const std::string &project_id) { worker_.set_project(project_id); }
 	void load();
 	void flush_if_dirty();
 	void reset();
@@ -124,6 +126,10 @@ public:
 	// Paths grouped with their source file: art/a.png.import -> art/a.png.
 	static godot::String key_of(const godot::String &path);
 	static bool excluded(const godot::String &path);
+	// Why a path is not shared: "" when it is, "skip" for files that are never
+	// shared on purpose (caches, the add-on, temporary files), else a reason
+	// to show (a name the server would refuse).
+	static godot::String exclusion_reason(const godot::String &path);
 	// The YHDE add-on itself and project.godot can never be removed through
 	// the log: losing either would disconnect or break every editor.
 	static bool protected_from_delete(const godot::String &path);
@@ -184,6 +190,17 @@ private:
 	void backup(const godot::String &path);
 	void apply_project_settings(const godot::String &incoming);
 	bool needs_approval(const godot::String &path, const std::string &hash);
+	// Whether this many files gone at once must be confirmed first.
+	bool is_mass_delete(size_t count) const;
+
+public:
+	// The state file was there but neither it nor its backup could be read:
+	// what this computer has is unknown, so it joins as if for the first time.
+	bool state_lost() const { return state_lost_; }
+
+private:
+	bool state_lost_ = false;
+	std::set<godot::String> unshareable_; // told once each
 	void release_accepted_code();
 	godot::String incoming_path(const std::string &hash) const;
 	static godot::String global(const godot::String &path);

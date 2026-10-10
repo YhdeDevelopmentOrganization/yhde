@@ -18,6 +18,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <algorithm>
+#include <cctype>
 
 using namespace godot;
 
@@ -34,8 +35,13 @@ constexpr double kHotSeconds = 2.0;      // mtime has 1 s resolution: re-hash fi
 constexpr double kImportWaitMax = 180.0;
 constexpr double kRetryDelay = 5.0;
 constexpr size_t kCheckBatch = 2000;
-// This many files vanishing in one pass is held for confirmation.
+// This many files vanishing in one pass is held for confirmation, and so is
+// a fifth of the project's files (at least kMassDeleteMin): in a small
+// project 19 of 20 files gone is as much a mistake as 2000 in a big one.
 constexpr size_t kMassDelete = 20;
+constexpr size_t kMassDeleteMin = 3;
+constexpr int64_t kStateVersion = 1;
+constexpr int64_t kMaxPathBytes = 1024; // AssetRules.MaxPathLength
 constexpr int kMaxDependencies = 128;
 constexpr double kSidecarWait = 30.0; // a received .import/.uid waits this long for its file's operation
 const char *kIncomingDir = "res://.godot/yhde/incoming";
@@ -89,23 +95,44 @@ String AssetSync::key_of(const String &path) {
 	return path;
 }
 
-bool AssetSync::excluded(const String &path) {
-	if (!path.begins_with("res://")) return true;
+// The same rules as the server's AssetRules.IsValidPath, checked against one
+// table (client/tests/gate/path_rules.json): a file one side refuses never
+// sits unshared on the other without a word.
+String AssetSync::exclusion_reason(const String &path) {
+	if (!path.begins_with("res://")) return "not in the project";
+	if (path.utf8().length() > kMaxPathBytes) return "its path is too long";
 	String rel = path.substr(6);
-	if (rel.is_empty() || rel.contains("..") || rel.contains("\\") || rel.contains(":")) return true;
-	// Case-insensitive: on Windows and macOS "Addons/YHDE/..." is the same folder.
-	if (rel.to_lower().begins_with("addons/yhde/")) return true;
-	if (is_imported_output(path)) return false;
-	PackedStringArray parts = rel.split("/");
-	for (int64_t i = 0; i + 1 < parts.size(); i++) {
-		if (parts[i].begins_with(".")) return true; // .godot, .git, .import, editor folders
+	if (rel.is_empty()) return "not a file";
+	for (int64_t i = 0; i < rel.length(); i++) {
+		char32_t c = rel[i];
+		if (c < 0x20 || c == 0x7F) return "its name has a control character in it"; // Windows cannot store these
 	}
-	String file = rel.get_file();
-	String lower = file.to_lower();
-	if (lower == ".ds_store" || lower == "thumbs.db" || lower == "desktop.ini" || lower == "override.cfg") return true;
-	if (lower.ends_with(".tmp") || lower.ends_with("~") || lower.ends_with(".swp") || lower.ends_with(".yhde-tmp")) return true;
-	if (file.ends_with(".") || file != file.strip_edges()) return true;
-	return false;
+	if (rel.contains("\\") || rel.contains(":") || rel.contains(String::chr(0))) return "its name has \ or : in it";
+	// Case-insensitive: on Windows and macOS "Addons/YHDE/..." is the same folder.
+	if (rel.to_lower().begins_with("addons/yhde/")) return "skip";
+	if (is_imported_output(path)) {
+		// A shared import result, one file directly in .godot/imported/.
+		String name = rel.get_file();
+		if (name != name.strip_edges() || name.ends_with(".")) return "a name in its path starts or ends with a space, or ends with a dot";
+		return String();
+	}
+	PackedStringArray parts = rel.split("/");
+	for (int64_t i = 0; i < parts.size(); i++) {
+		const String &seg = parts[i];
+		if (seg.is_empty() || seg == "." || seg == "..") return "its path has an empty, . or .. part";
+		// Windows cannot store these.
+		if (seg != seg.strip_edges() || seg.ends_with(".")) return "a name in its path starts or ends with a space, or ends with a dot";
+		if (i + 1 < parts.size() && seg.begins_with(".")) return "skip"; // .godot, .git, editor folders
+	}
+	String lower = rel.get_file().to_lower();
+	// Per-machine and temporary files (the server refuses them too).
+	if (lower == ".ds_store" || lower == "thumbs.db" || lower == "desktop.ini" || lower == "override.cfg") return "skip";
+	if (lower.ends_with(".tmp") || lower.ends_with("~") || lower.ends_with(".swp") || lower.ends_with(".yhde-tmp")) return "skip";
+	return String();
+}
+
+bool AssetSync::excluded(const String &path) {
+	return !exclusion_reason(path).is_empty();
 }
 
 bool AssetSync::is_asset_op(const std::string &type) {
@@ -231,12 +258,26 @@ void AssetSync::load() {
 	disk_.clear();
 	applied_.clear();
 	held_code_.clear();
-	if (state_file_.is_empty() || !FileAccess::file_exists(state_file_)) return;
-	Ref<FileAccess> f = FileAccess::open(state_file_, FileAccess::READ);
-	if (f.is_null()) return;
-	Variant data;
-	if (!from_json(f->get_as_text(), data) || data.get_type() != Variant::DICTIONARY) return;
-	Dictionary d = data;
+	state_lost_ = false;
+	if (state_file_.is_empty()) return;
+	// The file, else the copy kept from the write before it. A file that is
+	// there but unreadable (a full disk, a crash while writing) is never taken
+	// as "nothing known": every local file would look new.
+	auto read = [](const String &path, Dictionary &out) {
+		if (!FileAccess::file_exists(path)) return false;
+		Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
+		if (f.is_null()) return false;
+		Variant data;
+		if (!from_json(f->get_as_text(), data) || data.get_type() != Variant::DICTIONARY) return false;
+		out = data;
+		return int64_t(double(out.get("v", 0.0))) == kStateVersion;
+	};
+	Dictionary d;
+	bool had = FileAccess::file_exists(state_file_) || FileAccess::file_exists(state_file_ + ".bak");
+	if (!read(state_file_, d) && !read(state_file_ + ".bak", d)) {
+		state_lost_ = had;
+		return;
+	}
 	Dictionary log = d.get("log", Dictionary());
 	Array keys = log.keys();
 	for (int64_t i = 0; i < keys.size(); i++) {
@@ -312,22 +353,39 @@ void AssetSync::flush_if_dirty() {
 		held[kv.first] = e;
 	}
 	Dictionary d;
-	d["v"] = 1;
+	d["v"] = kStateVersion;
 	d["log"] = log;
 	d["disk"] = disk;
 	d["applied"] = applied;
 	d["held"] = held;
 	DirAccess::make_dir_recursive_absolute(state_file_.get_base_dir());
+	// Written beside it, checked and flushed, then moved over it; the old one
+	// stays as the backup. A failed write keeps the old file and tries again.
 	String tmp = state_file_ + ".tmp";
+	String text = to_json(d);
+	int64_t bytes = text.utf8().length();
 	{
 		Ref<FileAccess> f = FileAccess::open(tmp, FileAccess::WRITE);
-		if (f.is_null()) {
+		if (f.is_null() || !f->store_string(text)) {
 			dirty_ = true;
 			return;
 		}
-		f->store_string(to_json(d));
+		f->flush();
+		if (f->get_error() != OK) {
+			dirty_ = true;
+			return;
+		}
 	}
-	DirAccess::rename_absolute(tmp, state_file_);
+	if (int64_t(FileAccess::get_size(tmp)) != bytes) {
+		DirAccess::remove_absolute(tmp);
+		dirty_ = true;
+		return;
+	}
+	if (FileAccess::file_exists(state_file_)) {
+		DirAccess::remove_absolute(state_file_ + ".bak");
+		DirAccess::rename_absolute(state_file_, state_file_ + ".bak");
+	}
+	if (DirAccess::rename_absolute(tmp, state_file_) != OK) dirty_ = true;
 }
 
 // Lifecycle
@@ -382,17 +440,26 @@ void AssetSync::set_caught_up() {
 	}
 }
 
+bool AssetSync::is_mass_delete(size_t count) const {
+	size_t files = 0;
+	for (const auto &kv : log_) {
+		if (!is_sidecar(kv.first) && !is_imported_output(kv.first)) files++;
+	}
+	return count >= kMassDelete || (count >= kMassDeleteMin && count * 5 > files);
+}
+
 void AssetSync::queue_offline_changes() {
+	// Files gone while the editor was closed (a branch switch, a moved folder,
+	// an unplugged drive) are deleted for the team only after the same check
+	// as files that vanish while it runs.
+	std::vector<std::pair<String, std::string>> missing;
 	for (auto &kv : disk_) {
 		const String &path = kv.first;
 		DiskEntry &d = kv.second;
 		auto l = log_.find(path);
 		if (l == log_.end() || d.base.empty() || pending_.count(path) || excluded(path) || held_code_.count(path)) continue;
 		if (!FileAccess::file_exists(path)) {
-			Dictionary p;
-			p["s"] = path;
-			p["o"] = str_of(l->second.hash);
-			emit("DeleteAsset", path, p, std::string());
+			if (!protected_from_delete(path)) missing.emplace_back(path, l->second.hash);
 			continue;
 		}
 		if (int64_t(FileAccess::get_modified_time(path)) == d.mtime && int64_t(FileAccess::get_size(path)) == d.size) continue;
@@ -409,6 +476,25 @@ void AssetSync::queue_offline_changes() {
 		p["n"] = d.size;
 		p["o"] = str_of(l->second.hash);
 		emit("UpdateAsset", path, p, d.hash);
+	}
+	size_t real = 0;
+	for (const auto &m : missing) {
+		if (!is_sidecar(m.first)) real++;
+	}
+	if (is_mass_delete(real)) {
+		for (const auto &m : missing) held_deletes_.insert(m.first);
+		if (hooks_.notice) {
+			hooks_.notice(String::num_int64(int64_t(real)) +
+							" files are missing since YHDE last ran here. Nothing was deleted for your team: open the YHDE panel to delete them for everyone or restore them.",
+					1);
+		}
+		return;
+	}
+	for (const auto &m : missing) {
+		Dictionary p;
+		p["s"] = m.first;
+		p["o"] = str_of(m.second);
+		emit("DeleteAsset", m.first, p, std::string());
 	}
 }
 
@@ -488,7 +574,15 @@ void AssetSync::scan_step(double now) {
 		for (int64_t i = 0; i < files.size(); i++) {
 			String path = dir.path_join(files[i]);
 			if (path.ends_with(".import")) import_exts_.insert(key_of(path).get_extension().to_lower());
-			if (excluded(path)) continue;
+			String why = exclusion_reason(path);
+			if (!why.is_empty()) {
+				// A name the server would refuse: say so once, instead of the
+				// file silently never reaching anyone.
+				if (why != "skip" && unshareable_.insert(path).second && hooks_.notice) {
+					hooks_.notice(path.trim_prefix("res://") + String(" is not shared: ") + why + ". Rename it to share it.", 1);
+				}
+				continue;
+			}
 			scan_seen_.insert(path);
 			observe(path, int64_t(FileAccess::get_size(path)), int64_t(FileAccess::get_modified_time(path)), now);
 		}
@@ -521,7 +615,11 @@ void AssetSync::finish_pass(double now) {
 		bool known = log_.count(path) || (p != pending_.end() && !p->second.hash.empty());
 		if (known && !incoming_.count(key_of(path))) deletions.push_back(path);
 	}
-	if (deletions.size() >= kMassDelete) {
+	size_t real = 0;
+	for (const String &path : deletions) {
+		if (!is_sidecar(path)) real++;
+	}
+	if (is_mass_delete(real)) {
 		for (const String &path : deletions) held_deletes_.insert(path);
 		if (hooks_.notice) {
 			hooks_.notice(String::num_int64(int64_t(held_deletes_.size())) +
@@ -1394,11 +1492,22 @@ void AssetSync::apply_project_settings(const String &incoming) {
 	read("res://project.godot", before);
 	if (!read(incoming, after)) return;
 	Array keys = after.keys();
+	PackedStringArray autoloads;
 	for (int64_t i = 0; i < keys.size(); i++) {
 		String name = keys[i];
 		if (name.begins_with("editor_plugins/")) continue; // which add-ons are enabled is up to each editor
 		Variant v = after[keys[i]];
-		if (!before.has(name) || before[name] != v) ps->set_setting(name, v);
+		if (!before.has(name) || before[name] != v) {
+			ps->set_setting(name, v);
+			if (name.begins_with("autoload/")) autoloads.push_back(name.trim_prefix("autoload/"));
+		}
+	}
+	// An autoload is not held (project.godot is applied as it comes, see
+	// security.md), but its script runs when the game is played: say so.
+	if (!autoloads.is_empty() && hooks_.notice) {
+		hooks_.notice(String("A teammate changed the project's autoloads (") + String(", ").join(autoloads) +
+						"). Their scripts run when you press Play: check them if you don't know this change.",
+				1);
 	}
 	keys = before.keys();
 	for (int64_t i = 0; i < keys.size(); i++) {
@@ -1542,16 +1651,65 @@ bool AssetSync::is_native_or_build_file(const String &path) {
 	return false;
 }
 
+namespace {
+
+bool is_ident_char(char c) {
+	return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+// C# [Tool] in any spelling the compiler accepts: [Tool], [ Tool ],
+// [Tool()], [ToolAttribute], [Godot.Tool], [global::Godot.Tool],
+// [Other, Tool]. Whitespace and newlines may sit between the parts.
+bool has_csharp_tool_attribute(const std::string &text) {
+	size_t pos = 0;
+	while ((pos = text.find("Tool", pos)) != std::string::npos) {
+		size_t at = pos;
+		pos += 4;
+		if (at > 0 && is_ident_char(text[at - 1])) continue;
+		size_t end = at + 4;
+		if (text.compare(end, 9, "Attribute") == 0) end += 9;
+		if (end < text.size() && is_ident_char(text[end])) continue;
+		size_t before = at;
+		while (before > 0 && std::isspace(static_cast<unsigned char>(text[before - 1]))) before--;
+		if (before == 0) continue;
+		char c = text[before - 1];
+		if (c == '[' || c == ',' || c == '.' || c == ':') return true;
+	}
+	return false;
+}
+
+} // namespace
+
 bool AssetSync::may_run_in_editor(const String &path, const String &bytes_file) {
 	String ext = path.get_extension().to_lower();
+	// Tokenized GDScript cannot be searched as text.
+	if (ext == "gdc") return true;
+	bool gdscript = ext == "gd";
 	bool csharp = ext == "cs";
-	if (!(ext == "gd" || csharp || ext == "tscn" || ext == "tres" || ext == "scn" || ext == "res")) return false;
+	bool resource_ext = ext == "tscn" || ext == "tres" || ext == "scn" || ext == "res";
 	Ref<FileAccess> f = FileAccess::open(bytes_file, FileAccess::READ);
-	if (f.is_null()) return true; // cannot tell: hold it
-	// @tool scripts (also built into scenes and resources) and C# [Tool]
-	// classes run inside the editor.
-	std::vector<std::string> markers = { "@tool" };
-	if (csharp) markers = { "[Tool", ".Tool" };
+	if (f.is_null()) return gdscript || csharp || resource_ext; // cannot tell: hold anything that may be code
+	if (csharp) {
+		// C# files are small; one too big to read whole is held.
+		const int64_t max_cs = 8 << 20;
+		if (int64_t(f->get_length()) > max_cs) return true;
+		PackedByteArray all = f->get_buffer(int64_t(f->get_length()));
+		std::string text(reinterpret_cast<const char *>(all.ptr()), size_t(all.size()));
+		return has_csharp_tool_attribute(text);
+	}
+	// Godot loads a resource by what it is, not by its name, and many resource
+	// types have their own extension (.material, .theme, .anim ...). So any
+	// file with a resource header is checked, whatever it is called.
+	PackedByteArray head = f->get_buffer(4);
+	bool rscc = head.size() == 4 && head[0] == 'R' && head[1] == 'S' && head[2] == 'C' && head[3] == 'C';
+	bool rsrc = head.size() == 4 && head[0] == 'R' && head[1] == 'S' && head[2] == 'R' && head[3] == 'C';
+	bool text_resource = head.size() == 4 && head[0] == '[' && head[1] == 'g' && head[2] == 'd' && head[3] == '_';
+	// Compressed binary resources hide the text below, so they cannot be checked: hold them.
+	if (rscc) return true;
+	if (!(gdscript || resource_ext || rsrc || text_resource)) return false;
+	f->seek(0);
+	// @tool scripts (also built into scenes and resources) run inside the editor.
+	const std::string marker = "@tool";
 	const int64_t chunk = 1 << 20;
 	const size_t overlap = 8;
 	std::string window;
@@ -1559,9 +1717,7 @@ bool AssetSync::may_run_in_editor(const String &path, const String &bytes_file) 
 		PackedByteArray buf = f->get_buffer(chunk);
 		if (buf.is_empty()) break;
 		window.append(reinterpret_cast<const char *>(buf.ptr()), size_t(buf.size()));
-		for (const std::string &m : markers) {
-			if (window.find(m) != std::string::npos) return true;
-		}
+		if (window.find(marker) != std::string::npos) return true;
 		if (window.size() > overlap) window.erase(0, window.size() - overlap);
 	}
 	return false;
@@ -1571,8 +1727,7 @@ bool AssetSync::needs_approval(const String &path, const std::string &hash) {
 	if (trust_code_ || path == "res://project.godot" || is_sidecar(path) || is_imported_output(path)) return false;
 	bool native = is_native_or_build_file(path);
 	String ext = path.get_extension().to_lower();
-	bool script_like = ext == "gd" || ext == "cs" || ext == "tscn" || ext == "tres" || ext == "scn" || ext == "res";
-	if (!native && !script_like) return false;
+	bool script_like = ext == "gd" || ext == "gdc" || ext == "cs" || ext == "tscn" || ext == "tres" || ext == "scn" || ext == "res";
 	// The same bytes are already code in this project (a move, a copy, an
 	// update that was undone): nothing new runs. A copy that is harmless
 	// where it is (a .txt) does not count, or renaming it would slip through.
@@ -1582,12 +1737,16 @@ bool AssetSync::needs_approval(const String &path, const std::string &hash) {
 		if (is_native_or_build_file(kv.first) || may_run_in_editor(kv.first, kv.first)) return false;
 	}
 	if (native) return true;
+	// Every other file is looked at: what decides is its content (a resource
+	// header), not its extension.
 	String incoming = incoming_path(hash);
 	String bytes;
 	if (downloaded_.count(hash) && FileAccess::file_exists(incoming)) {
 		bytes = incoming;
 	} else if (!local_copy(hash, bytes)) {
-		return true; // cannot look inside: hold it
+		// Cannot look inside. A file that may be code is held; for the rest the
+		// write needs these same bytes, so nothing is written either.
+		return script_like;
 	}
 	return may_run_in_editor(path, bytes);
 }

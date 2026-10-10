@@ -41,7 +41,7 @@ public sealed class PresenceServiceTests
                 return Task.CompletedTask;
             });
         // Fan-out encodes once and sends the same bytes to every peer.
-        sm.SendEncodedAsync(Arg.Any<SessionState>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+        sm.SendEncodedAsync(Arg.Any<SessionState>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>(), Arg.Any<bool>())
             .Returns(ci =>
             {
                 Record(ci.Arg<SessionState>(), Codec.Decode(ci.Arg<byte[]>().AsMemory(4)));

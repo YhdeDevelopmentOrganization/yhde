@@ -471,6 +471,24 @@ func _connect_invite() -> void:
 	var url := str(_meta("invite_url", ""))
 	if url == "":
 		return
+	# A starter project can name any server: the first time it is not the
+	# usual one, ask before sending its code there.
+	var host := Account.host_of(url)
+	if host != Account.host_of(server_url()) and str(_meta("invite_trusted", "")) != url:
+		var ask := ConfirmationDialog.new()
+		ask.title = "Connect to %s?" % host
+		ask.dialog_text = "This project's invite connects to %s, not the usual YHDE server (%s). The game's files will come from there. Only continue if you trust whoever gave you this project." % [host, Account.host_of(server_url())]
+		ask.dialog_autowrap = true
+		ask.min_size = Vector2i(int(Style.px(420)), 0)
+		ask.ok_button_text = "Connect"
+		ask.confirmed.connect(func() -> void:
+			ask.queue_free()
+			_save_setting("invite_trusted", url)
+			_connect_invite())
+		ask.canceled.connect(ask.queue_free)
+		EditorInterface.get_base_control().add_child(ask)
+		ask.popup_centered()
+		return
 	settings.url = url
 	_save_setting("url", url)
 	_save_setting("via", "invite")

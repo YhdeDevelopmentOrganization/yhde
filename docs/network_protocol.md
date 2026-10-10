@@ -130,14 +130,20 @@ reserved. File transfer uses HTTP instead (section 5).
 ## 5. File Transfer over HTTP
 
 Same host and same secret as the WebSocket, `Authorization: Bearer <secret>`
-on every request (401 without it). The bytes never go over the WebSocket.
+on every request (401 without it), and the project as
+`X-YHDE-Project: <uuid>` (403 when the secret does not cover it). Only that
+project's files are served and accepted ([assets.md](assets.md) §3). Without
+the header (add-ons before 0.7), an invite code means its one project, the
+server key means every project, and a sign-in may read files its projects
+hold but must update the add-on to upload. The bytes never go over the
+WebSocket.
 
 | Route | |
 |---|---|
 | `POST /assets/missing {"hashes":[...]}` | Returns `{"missing":[...],"partial":{hash:offset}}`: which to upload and where to resume. At most 10 000 hashes. |
 | `HEAD /assets/blobs/{sha256}` | 200 with `Content-Length` when stored, 404 with `Upload-Offset` otherwise. |
 | `GET /assets/blobs/{sha256}` | The bytes. `Range` works; the ETag is the hash. |
-| `PATCH /assets/blobs/{sha256}` | Adds a chunk of at most 64 MiB (`Upload-Offset`, `Upload-Length`). 200 `{"offset","complete"}`; 409 `{"offset"}` means resume there; 422 means the bytes don't match the hash and were thrown away; 413 too large; 423 someone else is uploading it. |
+| `PATCH /assets/blobs/{sha256}` | Adds a chunk of at most 64 MiB (`Upload-Offset`, `Upload-Length`). 200 `{"offset","complete"}`; 409 `{"offset"}` means resume there; 422 means the bytes don't match the hash and were thrown away; 413 too large; 423 the same uploader is already uploading it; 403 view only; 429 too many unfinished uploads; 507 the owner's storage is full or the server's disk is low (the `detail` says which). |
 
 The server lists `"assets"` in its capabilities. A file operation is accepted
 only after its bytes are stored (otherwise `AssetMissing`). One that changes
@@ -163,6 +169,16 @@ as done.
   stored while paging also arrive live; the client drops duplicates by `seq`.
 - The editor merges fast repeated changes, such as a drag, into fewer
   operations before sending ([capacity.md](capacity.md)).
+- A connection the server hears nothing from for `Yhde:IdleTimeoutSeconds`
+  (60 by default; the editor pings every 5 s) is closed, and so is one whose
+  outgoing queue passes 64 MiB or that takes more than 20 s to take one
+  message ([reliability.md](reliability.md)).
+- One address may open 60 connections a minute and get 20 keys refused in
+  10 minutes; this computer (loopback) is exempt.
+- A message decodes to at most a million values (a catch-up page has a few
+  thousand).
+- File uploads stop while the disk has less than `Yhde:MinFreeDiskBytes`
+  free (2 GiB by default).
 
 ## 8. Changing the Protocol
 

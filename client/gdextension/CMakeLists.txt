@@ -29,6 +29,7 @@ add_library(yhde SHARED
     src/core/uuid.cpp
     src/core/msgpack.cpp
     src/core/sha256.cpp
+    src/core/url.cpp
     src/assets/asset_worker.cpp
     src/assets/asset_sync.cpp
     src/text/text_operation.cpp

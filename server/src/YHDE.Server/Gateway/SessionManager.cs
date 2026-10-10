@@ -7,10 +7,17 @@ using YHDE.Server.Framing.Messages;
 
 namespace YHDE.Server.Gateway;
 
-// Live sessions and sending to everyone in a branch or project.
+// Live sessions and sending to everyone in a branch or project. Sending only
+// queues: each connection's own task writes to its socket (Outbox.cs), so
+// one stalled client never holds up the commit loop, presence or chat for
+// anyone else.
 public sealed class SessionManager(ILogger<SessionManager> logger) : ISessionManager
 {
     private readonly ConcurrentDictionary<Guid, SessionState> _sessions = new();
+    private long _slowDisconnects;
+
+    // Connections cut off for being too slow since the server started (admin page).
+    public long SlowDisconnects => Interlocked.Read(ref _slowDisconnects);
 
     public IReadOnlyCollection<SessionState> All => _sessions.Values.ToList();
 
@@ -28,7 +35,7 @@ public sealed class SessionManager(ILogger<SessionManager> logger) : ISessionMan
 
     // Broadcast a committed operation to every subscriber of the operation's branch.
     // Called by OperationProcessor AFTER the commit transaction (reliability.md).
-    public async Task BroadcastOpCommittedAsync(Operation op, CancellationToken ct)
+    public Task BroadcastOpCommittedAsync(Operation op, CancellationToken ct)
     {
         var payload = new CommittedOpPayload
         {
@@ -55,9 +62,8 @@ public sealed class SessionManager(ILogger<SessionManager> logger) : ISessionMan
         };
         var wire = Codec.Encode(frame);
 
-        var subscribers = GetBranchSubscribers(op.BranchId).ToList();
-        var tasks = subscribers.Select(s => SendAsync(s, wire, ct));
-        await Task.WhenAll(tasks);
+        foreach (var s in GetBranchSubscribers(op.BranchId)) Post(s, wire, droppable: false);
+        return Task.CompletedTask;
     }
 
     // Send an OpRejected message to the originating session only.
@@ -156,30 +162,47 @@ public sealed class SessionManager(ILogger<SessionManager> logger) : ISessionMan
         await SendAsync(session, Codec.Encode(frame), ct);
     }
 
-    // Send an arbitrary frame to one session (used by the presence relay).
+    // Send an arbitrary frame to one session (presence, chat): never waits.
     public Task SendFrameAsync(SessionState session, Frame frame, CancellationToken ct)
-        => SendAsync(session, Codec.Encode(frame), ct);
-
-    public Task SendEncodedAsync(SessionState session, byte[] wire, CancellationToken ct)
-        => SendAsync(session, wire, ct);
-
-    // Write bytes to one WebSocket connection, serialised by the session's write lock.
-    private async Task SendAsync(SessionState session, byte[] wire, CancellationToken ct)
     {
-        if (session.Socket.State != WebSocketState.Open) return;
+        Post(session, Codec.Encode(frame), droppable: false);
+        return Task.CompletedTask;
+    }
 
-        await session.WriteLock.WaitAsync(ct);
+    public Task SendEncodedAsync(SessionState session, byte[] wire, CancellationToken ct, bool droppable = false)
+    {
+        Post(session, wire, droppable);
+        return Task.CompletedTask;
+    }
+
+    public void Disconnect(SessionState session, string reason, bool slow = false)
+    {
+        if (slow) Interlocked.Increment(ref _slowDisconnects);
+        logger.LogWarning("Closing session {SessionId} ({Name}): {Reason}", session.SessionId, session.MemberName, reason);
         try
         {
-            await session.Socket.SendAsync(wire, WebSocketMessageType.Binary, true, ct);
+            session.Outbox.Complete();
+            session.Socket.Abort();
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Send failed for session {SessionId}: connection may be gone", session.SessionId);
+            logger.LogDebug(ex, "Abort of session {SessionId} failed", session.SessionId);
         }
-        finally
-        {
-            session.WriteLock.Release();
-        }
+    }
+
+    // Queues for another person's connection; never waits for their network.
+    private void Post(SessionState session, byte[] wire, bool droppable)
+    {
+        if (session.Socket.State != WebSocketState.Open) return;
+        if (session.Outbox.TryPost(wire, droppable)) return;
+        Disconnect(session, $"too slow: {session.Outbox.QueuedBytes} bytes waiting to be sent", slow: true);
+    }
+
+    // Queues a reply to the session's own request. Waits while its queue is
+    // full, which slows only that session's own read loop.
+    private async Task SendAsync(SessionState session, byte[] wire, CancellationToken ct)
+    {
+        if (session.Socket.State != WebSocketState.Open) return;
+        await session.Outbox.PostAsync(wire, ct);
     }
 }

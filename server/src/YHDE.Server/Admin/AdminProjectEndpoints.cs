@@ -152,7 +152,7 @@ public static class AdminProjectEndpoints
     }
 
     // After a project is deleted, the stored files only it used are freed.
-    internal static async Task FreeUnusedFiles(Database db, BlobStore blobs, ILogger logger)
+    public static async Task FreeUnusedFiles(Database db, BlobStore blobs, ILogger logger)
     {
         try
         {
@@ -162,6 +162,7 @@ public static class AdminProjectEndpoints
                 SELECT DISTINCT payload->>'h' FROM operations
                 WHERE type IN ('RegisterAsset', 'UpdateAsset', 'MoveAsset') AND payload ? 'h'
                 UNION SELECT hash FROM site_media
+                UNION SELECT hash FROM project_blobs
                 """, commandTimeout: 600))).ToHashSet(StringComparer.Ordinal);
             var (files, bytes) = blobs.RemoveUnreferenced(used);
             logger.LogInformation("Freed {Files} unused files ({Bytes} bytes) after a project was deleted", files, bytes);

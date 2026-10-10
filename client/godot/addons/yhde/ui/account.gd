@@ -14,6 +14,9 @@ signal problem(text: String)
 signal message(text: String)                   # something worked (for a toast)
 
 const FILE := "yhde_account.cfg"
+## Redirects are followed by hand, to the same address only, this many times.
+const MAX_REDIRECTS := 3
+const REDIRECT_STATUS := [301, 302, 303, 307, 308]
 
 var http_base := ""   # https://yhde.example.com
 var token := ""
@@ -64,6 +67,12 @@ func sign_in() -> void:
 	_device_code = str(r.data.get("deviceCode", ""))
 	_user_code = str(r.data.get("userCode", ""))
 	_url = str(r.data.get("url", ""))
+	if not may_open(_url, http_base):
+		problem.emit("The server's sign-in page is not on %s, so YHDE did not open it: %s. Open it yourself only if you trust it." % [host_of(http_base), _url.left(200)])
+		_url = ""
+		_poll.wait_time = maxf(2.0, float(r.data.get("interval", 3)))
+		_poll.start()
+		return
 	# YHDE_NO_BROWSER: automated tests approve without a browser.
 	if OS.get_environment("YHDE_NO_BROWSER") == "":
 		OS.shell_open(_url)
@@ -73,7 +82,7 @@ func sign_in() -> void:
 
 
 func open_page_again() -> void:
-	if _url != "":
+	if _url != "" and may_open(_url, http_base):
 		OS.shell_open(_url)
 
 
@@ -228,7 +237,15 @@ func _save() -> void:
 	else:
 		cfg.set_value(http_base, "token", token)
 		cfg.set_value(http_base, "user", user)
-	cfg.save(_path())
+	# The sign-in is readable by this user only (Linux, macOS; Windows keeps
+	# the folder per user): written beside the file, restricted, then moved over it.
+	var tmp := _path() + ".tmp"
+	if cfg.save(tmp) != OK:
+		return
+	if OS.get_name() != "Windows":
+		FileAccess.set_unix_permissions(tmp, FileAccess.UNIX_READ_OWNER | FileAccess.UNIX_WRITE_OWNER)
+	if DirAccess.rename_absolute(tmp, _path()) != OK:
+		DirAccess.remove_absolute(tmp)
 
 
 func _error_text(r: Dictionary, fallback: String) -> String:
@@ -240,20 +257,109 @@ func _error_text(r: Dictionary, fallback: String) -> String:
 	return detail if detail != "" else fallback
 
 
-## One HTTP request; returns {code, data}. code 0 = no answer.
+## Whether the sign-in may be sent to this address: https://, or http:// only
+## for this computer (localhost, 127.x.x.x, [::1]).
+static func allows_token(base: String) -> bool:
+	var b := base.strip_edges().to_lower()
+	if b.begins_with("https://"):
+		return true
+	if not b.begins_with("http://"):
+		return false
+	var authority := b.trim_prefix("http://")
+	for stop in ["/", "?", "#"]:
+		authority = authority.get_slice(stop, 0)
+	if authority.contains("@"):
+		return false # user name and password in the address: not clear which host it is
+	var host := authority
+	if host.begins_with("["):
+		host = host.get_slice("]", 0) + "]"
+	else:
+		host = host.get_slice(":", 0)
+	if host == "localhost" or host == "[::1]":
+		return true
+	return host.begins_with("127.") and host.is_valid_ip_address()
+
+
+## The host of an address, in lowercase ("" when there is none): "[::1]",
+## "example.com". A user name in the address is dropped.
+static func host_of(address: String) -> String:
+	var a := address.strip_edges().to_lower()
+	if not a.contains("://"):
+		return ""
+	var authority := a.get_slice("://", 1)
+	for stop in ["/", "?", "#"]:
+		authority = authority.get_slice(stop, 0)
+	authority = authority.get_slice("@", authority.get_slice_count("@") - 1)
+	if authority.begins_with("["):
+		return authority.get_slice("]", 0) + "]"
+	return authority.get_slice(":", 0)
+
+
+## Whether a page the server names may be opened in the browser: https:// (or
+## http:// on this computer) on the same host as the server, never a file or
+## another program's link.
+static func may_open(page: String, base: String) -> bool:
+	var p := page.strip_edges()
+	var lower := p.to_lower()
+	if not (lower.begins_with("https://") or lower.begins_with("http://")):
+		return false
+	if not allows_token(p) or p.contains("@"):
+		return false
+	return host_of(p) != "" and host_of(p) == host_of(base)
+
+
+## The address a redirect points to, if it stays on this server, else "".
+func _same_server_location(headers: PackedStringArray) -> String:
+	for h in headers:
+		if h.to_lower().begins_with("location:"):
+			var loc := h.substr(9).strip_edges()
+			if loc.begins_with("/") and not loc.begins_with("//"):
+				return http_base + loc
+			if loc == http_base or loc.begins_with(http_base + "/") or loc.begins_with(http_base + "?"):
+				return loc
+			return ""
+	return ""
+
+
+## One HTTP request; returns {code, data}. code 0 = no answer, code -1 = refused
+## here (the detail says why). Redirects are never left to Godot: the sign-in
+## must not follow one to another server, so only same-server ones are followed.
 func _request(method: int, path: String, body, auth: bool) -> Dictionary:
-	var req := HTTPRequest.new()
-	req.timeout = 20.0
-	add_child(req)
-	var headers := PackedStringArray(["Content-Type: application/json", "X-YHDE: 1", "Accept: application/json"])
-	if auth and token != "":
-		headers.append("Authorization: Bearer " + token)
-	var err := req.request(http_base + path, headers, method, "" if body == null else JSON.stringify(body))
-	if err != OK:
+	if not allows_token(http_base):
+		return {"code": -1, "data": {"detail": "YHDE will not talk to %s over an unencrypted connection. Use an https:// address." % http_base}}
+	var url := http_base + path
+	var payload: String = "" if body == null else JSON.stringify(body)
+	for hop in MAX_REDIRECTS + 1:
+		var req := HTTPRequest.new()
+		req.timeout = 20.0
+		req.max_redirects = 0
+		add_child(req)
+		var headers := PackedStringArray(["Content-Type: application/json", "X-YHDE: 1", "Accept: application/json"])
+		if auth and token != "":
+			headers.append("Authorization: Bearer " + token)
+		var err := req.request(url, headers, method, payload)
+		if err != OK:
+			req.queue_free()
+			return {"code": 0, "data": {}}
+		var result: Array = await req.request_completed
 		req.queue_free()
-		return {"code": 0, "data": {}}
-	var result: Array = await req.request_completed
-	req.queue_free()
-	var code: int = result[1] if result[0] == HTTPRequest.RESULT_SUCCESS else 0
-	var parsed = JSON.parse_string((result[3] as PackedByteArray).get_string_from_utf8()) if code != 0 else null
-	return {"code": code, "data": parsed if parsed is Dictionary else {}}
+		# With no redirects allowed Godot reports 301 to 303 as "redirect limit
+		# reached" but returns 307 and 308 as a plain success: look at the status.
+		var answered: bool = result[0] == HTTPRequest.RESULT_SUCCESS or result[0] == HTTPRequest.RESULT_REDIRECT_LIMIT_REACHED
+		if not answered:
+			return {"code": 0, "data": {}}
+		var status: int = result[1]
+		if status in REDIRECT_STATUS:
+			var target := _same_server_location(result[2])
+			if target == "":
+				return {"code": -1, "data": {"detail": "The server sent you to another address. YHDE did not follow it."}}
+			if status == 303:
+				method = HTTPClient.METHOD_GET
+				payload = ""
+			elif method != HTTPClient.METHOD_GET and status != 307 and status != 308:
+				return {"code": -1, "data": {"detail": "The server moved this address. YHDE did not repeat the request."}}
+			url = target
+			continue
+		var parsed = JSON.parse_string((result[3] as PackedByteArray).get_string_from_utf8())
+		return {"code": status, "data": parsed if parsed is Dictionary else {}}
+	return {"code": -1, "data": {"detail": "Too many redirects."}}

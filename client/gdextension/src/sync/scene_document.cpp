@@ -1914,7 +1914,8 @@ bool SyncDocument::apply_create(const Uuid &target, const Dictionary &p, ApplyCo
 			n = scene->instantiate(PackedScene::GEN_EDIT_STATE_INSTANCE);
 		} else {
 			ClassDBSingleton *db = ClassDBSingleton::get_singleton();
-			if (!db->class_exists(cls) || !db->is_parent_class(cls, "Node") || !db->can_instantiate(cls)) {
+			if (!db->class_exists(cls) || !db->is_parent_class(cls, "Node") || !db->can_instantiate(cls) ||
+					class_is_blocked(cls, ctx.allow_builtin_scripts)) {
 				ctx.errors.push_back(String("Unknown node type ") + cls);
 				return false;
 			}

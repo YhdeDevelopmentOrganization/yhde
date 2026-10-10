@@ -144,7 +144,8 @@ private:
 	void on_open();
 	void on_closed(const String &reason);
 	void on_frame(const yhde::proto::Frame &frame);
-	void subscribe();
+	void subscribe(bool fresh_connection = true);
+	void resync_after_gap(double now);
 	void drain();
 	void process_committed(std::vector<yhde::proto::CommittedOp> &ops);
 	void on_rejected(const yhde::proto::OpRejected &msg);
@@ -251,6 +252,15 @@ private:
 	std::map<int64_t, yhde::proto::CommittedOp> buffer_;
 	double gap_since_ = -1.0;
 	double stalled_since_ = -1.0;
+	// The server could not save for a moment ("try again"): unsent changes go
+	// out again at this time.
+	double resend_at_ = -1.0;
+	// Re-syncs after a gap back off (resync_after_gap); reset once live and quiet.
+	double resync_not_before_ = 0.0;
+	int resyncs_in_a_row_ = 0;
+	double quiet_since_ = -1.0;
+	// Operations applied per frame, fitted to a time budget (drain).
+	size_t ops_per_frame_ = 4000;
 	int64_t last_ack_sent_ = 0;
 	double last_ack_time_ = 0.0;
 	double last_flush_ = 0.0;

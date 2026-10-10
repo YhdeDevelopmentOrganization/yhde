@@ -35,11 +35,34 @@ A blob's name is the hex SHA-256 of its bytes
 
 Uploads can be resumed. Bytes are appended to a part file at the offset the
 client gives, and the part becomes a blob only when its hash matches the name
-it was uploaded under.
+it was uploaded under. Each uploader (a person, an invite code, the server
+key) has their own part file, so wrong bytes sent by one never reset
+another's progress. One uploader may have at most 64 unfinished uploads, and
+parts nobody continued for a week are removed every hour.
+
+### Which project holds a file
+
+The store is shared, but a project only sees the files it holds
+(`project_blobs`, [016_project_blobs.sql](../server/src/YHDE.Server/Persistence/Migrations/016_project_blobs.sql)).
+A project holds a file once someone who may edit it uploaded the whole file
+there, or once its log refers to it. Knowing a hash is never enough: when the
+store already has the bytes for another project, the upload still has to send
+all of them, and they are checked before the project gets the file (the copy
+on disk stays one). A file a project does not hold looks exactly like a file
+that does not exist: 404 on `GET` and `HEAD`, and listed by `/assets/missing`.
+
+An upload that no operation uses yet is *pending*. Pending uploads count
+toward the project owner's storage from the moment they finish, and the quota
+is checked before an upload starts (507 when it would not fit), so bytes
+cannot pile up outside the log. A pending upload that no operation used within
+two days is forgotten, and its bytes are removed when no project holds them
+and they were not touched within a day (`BlobJanitor`). Uploads also stop
+while the disk has less than `Yhde:MinFreeDiskBytes` free (2 GiB by default);
+the admin page warns before that.
 
 Blobs no operation refers to any more (after a project is deleted) are removed
 by a sweep. Blobs younger than a day are kept, because an upload in progress
-is not in the log yet.
+is not in the log yet; a blob asked for again is touched, so it counts as young.
 
 ## 4. Sharing a File
 
@@ -47,7 +70,8 @@ is not in the log yet.
 2. It asks the server which hashes are missing (`POST /assets/missing`).
 3. It uploads only those, in chunks (`PATCH /assets/blobs/{hash}`).
 4. It sends `RegisterAsset` or `UpdateAsset`. The server accepts the
-   operation only if the blob is stored.
+   operation only if the project holds the blob (otherwise `AssetMissing`,
+   and the editor uploads it again and resends).
 
 Receiving is the reverse: the operation arrives, the editor downloads the hash
 if it doesn't have it, checks the hash and writes the file. The routes are in

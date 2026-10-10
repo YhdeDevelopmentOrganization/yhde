@@ -32,3 +32,17 @@ dist/
 # Release signing keys (client/package_addon.py --new-key): never commit a private key
 *private*.pem
 yhde-release-key/
+
+# Local native builds next to the repository root
+build-diag/
+build-diag.bat
+build-diag.log
+
+# Decoder fuzzing (client/gdextension/fuzz) output
+client/gdextension/fuzz/*.exe
+client/gdextension/fuzz/*.obj
+client/gdextension/fuzz/*.pdb
+client/gdextension/fuzz/*.ilk
+client/gdextension/fuzz/crash-*
+client/gdextension/fuzz/leak-*
+client/gdextension/fuzz/oom-*

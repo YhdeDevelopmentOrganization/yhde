@@ -29,4 +29,9 @@
     <ProjectReference Include="..\..\src\YHDE.Server\YHDE.Server.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The path rules the add-on's gate test checks too. -->
+    <None Include="..\..\..\client\tests\gate\path_rules.json" Link="Assets\path_rules.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

@@ -57,7 +57,8 @@ CREATE INDEX IF NOT EXISTS idx_operations_target
 CREATE INDEX IF NOT EXISTS idx_operations_actor
     ON operations (actor_id, created_at);
 
--- Idempotent replay de-dup by client_op_ref (reliability.md)
+-- Lookup by client_op_ref. Not unique: duplicates are stopped by op_id, the
+-- primary key (a resend keeps its op_id and gets DuplicateOpId).
 CREATE INDEX IF NOT EXISTS idx_operations_client_op_ref
     ON operations (client_op_ref);
 

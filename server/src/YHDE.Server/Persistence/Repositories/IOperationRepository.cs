@@ -31,6 +31,9 @@ public interface IOperationRepository
     // The newest asset operation (Register/Update/Move/Delete) on a file's target id, if any.
     Task<Operation?> GetLatestAssetOpAsync(Guid branchId, Guid targetId, CancellationToken ct);
 
+    // Files on the branch now whose path equals `path` but for capitals.
+    Task<IReadOnlyList<string>> LivePathsDifferingInCaseAsync(Guid branchId, string path, CancellationToken ct);
+
     // Operations of one type on one target after a seq, in log order.
     Task<IReadOnlyList<Operation>> GetTargetOpsAsync(Guid branchId, Guid targetId, long afterSeq, string type, CancellationToken ct);
 }

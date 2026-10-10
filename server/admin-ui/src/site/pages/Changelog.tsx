@@ -13,6 +13,32 @@ type Release = { version: string; date: string; title: string; groups: Group[] }
 // the admin page come before these and replace a version they share.
 const HISTORY: Release[] = [
   {
+    version: "0.6.5",
+    date: "2026-10-10",
+    title: "Stability: no more instance crashes or stalled projects",
+    groups: [
+      {
+        tag: "fixed",
+        items: [
+          "The editor no longer crashes after you edit a scene that is instanced in another open scene.",
+          "One slow or lost connection can no longer hold up everyone in a project, and silent connections are closed after a minute.",
+          "A teammate who reconnects no longer leaves a second cursor and avatar behind.",
+          "Changes made while someone joins, and undos, arrive in order and are never missed.",
+          "Big batches of changes no longer freeze the editor, and files deleted while the editor was closed are only removed for everyone after you confirm.",
+          "File names that cannot sync are reported in the YHDE panel, and names that differ only in capitals are refused.",
+        ],
+      },
+      {
+        tag: "improved",
+        items: [
+          "Code from teammates is checked by what each file is, not its name, before anything can run in your editor.",
+          "Your sign-in never travels unencrypted to another computer, and redirects can no longer sign you out.",
+          "Files are only shared within their own project, and uploads count toward storage as they happen.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.6.0",
     date: "2026-10-04",
     title: "Open source, and TileSets that sync",

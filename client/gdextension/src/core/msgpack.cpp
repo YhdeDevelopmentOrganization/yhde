@@ -145,11 +145,17 @@ const MpValue &MpValue::at(size_t index) const {
 namespace {
 
 constexpr int kMaxDepth = 32;
+// Every decoded value takes about 120 bytes in memory, however small it was on
+// the wire: a message of a million one-byte elements would need gigabytes.
+// The largest real message (a catch-up page of at most 256 operations) has a
+// few thousand values.
+constexpr size_t kMaxValues = size_t(1) << 20;
 
 struct Reader {
 	const uint8_t *p;
 	const uint8_t *end;
 	std::string &error;
+	size_t values = 0;
 
 	bool need(size_t n) {
 		if (size_t(end - p) < n) {
@@ -192,8 +198,13 @@ struct Reader {
 	}
 
 	bool array(uint32_t n, MpValue &out, int depth) {
-		// Every element needs at least one byte: reject absurd counts up front.
+		// Every element needs at least one byte: reject absurd counts up front,
+		// and counts over the value budget before allocating them.
 		if (!need(n)) return false;
+		if (n > kMaxValues - values) {
+			error = "message has too many values";
+			return false;
+		}
 		out.type = MpValue::ARRAY;
 		out.items.resize(n);
 		for (uint32_t k = 0; k < n; k++) {
@@ -204,6 +215,10 @@ struct Reader {
 
 	bool map(uint32_t n, MpValue &out, int depth) {
 		if (!need(size_t(n) * 2)) return false;
+		if (size_t(n) * 2 > kMaxValues - values) {
+			error = "message has too many values";
+			return false;
+		}
 		out.type = MpValue::MAP;
 		out.pairs.resize(n);
 		for (uint32_t k = 0; k < n; k++) {
@@ -216,6 +231,10 @@ struct Reader {
 	bool value(MpValue &out, int depth) {
 		if (depth > kMaxDepth) {
 			error = "message nested too deeply";
+			return false;
+		}
+		if (++values > kMaxValues) {
+			error = "message has too many values";
 			return false;
 		}
 		uint8_t t;

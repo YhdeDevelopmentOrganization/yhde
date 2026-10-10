@@ -12,8 +12,17 @@ export function StoragePage({ data }: { data: Data }) {
   const used = storage.disk.total ? (storage.disk.total - storage.disk.free) / storage.disk.total : 0
   const backups = data.overview.backups
 
+  // Uploads stop below minFree (BlobStore): warn well before that.
+  const low = storage.disk.total > 0 && storage.disk.free < storage.disk.minFree * 3
+
   return (
     <div className="grid gap-6">
+      {low ? (
+        <p role="alert" className="rounded-lg bg-tint-rust px-4 py-3 text-sm text-text">
+          The disk is nearly full: {bytes(storage.disk.free)} free. Editors can't share new files once less than{" "}
+          {bytes(storage.disk.minFree)} is free. Delete unused projects or give the server more disk.
+        </p>
+      ) : null}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <Stat label="Game files" value={bytes(storage.stored.bytes)} hint={`${num(storage.stored.files)} unique files`} />
         <Stat label="Database" value={bytes(storage.database)} />

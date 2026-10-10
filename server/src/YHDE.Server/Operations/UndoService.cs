@@ -15,13 +15,24 @@ namespace YHDE.Server.Operations;
 // "u": {"r": request, "k": "undo"|"redo"} (plus "of": [...] on the first) so
 // the log shows what undid what. The originals are never edited: the log
 // stays append-only. Redo is the undo of an undo.
+//
+// The batch goes through the branch's one writer (BranchCommitter), so it is
+// broadcast in log order with everything else. File operations in it take
+// the branch's text lock and refresh cached text, as single ones do.
 public sealed class UndoService(
     IOperationRepository operationRepo,
     ISessionManager sessionManager,
     BlobStore blobs,
-    ILogger<UndoService> logger)
+    ILogger<UndoService> logger,
+    BranchCommitter? committer = null,
+    Text.TextDocuments? texts = null)
 {
     public const int MaxOperations = 20_000;
+    // A refusal the editor answers by sending the request again later.
+    public const string TryAgain = "TryAgain";
+
+    private readonly BranchCommitter _committer = committer
+        ?? new BranchCommitter(operationRepo, sessionManager, Microsoft.Extensions.Logging.Abstractions.NullLogger<BranchCommitter>.Instance);
 
     public sealed record Request(Guid RequestId, string Kind, IReadOnlyList<Guid> UndoOf, IReadOnlyList<OperationSubmission> Ops);
 
@@ -61,22 +72,38 @@ public sealed class UndoService(
             .Select((op, i) => op with { Payload = Annotate(op.Payload, request, first: i == 0) })
             .ToList();
 
+        var files = texts is not null && annotated.Any(o => AssetRules.IsAssetOp(o.Type));
+        var gate = files ? texts!.LockFor(branchId) : null;
+        if (gate is not null) await gate.WaitAsync(ct);
         IReadOnlyList<Operation> committed;
         try
         {
-            committed = await operationRepo.CommitBatchAsync(annotated, branchId, actorId, sessionId, ct);
+            // Committed and broadcast in log order by the branch's writer.
+            committed = await _committer.CommitBatchAsync(annotated, branchId, actorId, sessionId, ct);
+            if (files)
+            {
+                foreach (var op in annotated.Where(o => AssetRules.IsAssetOp(o.Type)))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(op.Payload);
+                    var root = doc.RootElement;
+                    texts!.Invalidate(branchId, root.TryGetProperty("s", out var s) ? s.GetString() : null);
+                    texts.Invalidate(branchId, root.TryGetProperty("f", out var f) ? f.GetString() : null);
+                }
+            }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // The database may be busy for a moment: the editor sends it again.
             logger.LogError(ex, "Failed to commit {Kind} {RequestId}", request.Kind, request.RequestId);
-            throw;
+            return Result.Refused(TryAgain, "The server could not save this right now. It will be tried again.");
+        }
+        finally
+        {
+            gate?.Release();
         }
 
         logger.LogInformation("{Kind} {RequestId} committed {Count} ops (seq {First}..{Last}) undoing {Undone} ops",
             request.Kind, request.RequestId, committed.Count, committed[0].Seq, committed[^1].Seq, originals.Count);
-
-        foreach (var op in committed)
-            await sessionManager.BroadcastOpCommittedAsync(op, ct);
 
         return new Result("committed", "", "", committed.Count);
     }

@@ -46,12 +46,13 @@ export function ServerPage({ data, refresh }: { data: Data; refresh: () => Promi
   return (
     <div className="grid gap-6">
       <UpdatesSection data={data} refresh={refresh} />
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
         <Stat label="Uptime" value={duration((Date.now() - new Date(h.started).getTime()) / 1000)} />
         <Stat label="Connections" value={h.connections} />
         <Stat label="CPU" value={`${h.cpu}%`} hint={`${h.cores} cores`} />
         <Stat label="Memory" value={`${Math.round(h.memoryMb)} MB`} />
         <Stat label="Server errors" value={num(h.errors)} hint={`of ${num(h.requests)} requests`} />
+        <Stat label="Slow editors cut off" value={num(h.slowDisconnects ?? 0)} hint="since the server started" />
       </div>
       <div className="grid gap-6 lg:grid-cols-2">
         <TimeChart title="Connections" data={data} field="connections" color="var(--accent)" />

@@ -314,6 +314,14 @@ bool class_is_blocked(const StringName &cls, bool allow_builtin_scripts) {
 	for (const char *d : denied) {
 		if (String(cls) == d) return true;
 	}
+	// Editor classes never belong in a scene or resource (a game cannot even
+	// load them), and creating one from a teammate's operation could reach
+	// into the editor itself.
+	ClassDBSingleton *db = ClassDBSingleton::get_singleton();
+	if (db && db->class_exists(cls)) {
+		ClassDBSingleton::APIType api = db->class_get_api_type(cls);
+		if (api == ClassDBSingleton::API_EDITOR || api == ClassDBSingleton::API_EDITOR_EXTENSION) return true;
+	}
 	return false;
 }
 

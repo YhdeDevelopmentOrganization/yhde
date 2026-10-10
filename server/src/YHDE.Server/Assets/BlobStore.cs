@@ -4,15 +4,19 @@ using System.Security.Cryptography;
 
 namespace YHDE.Server.Assets;
 
-public sealed record BlobStoreOptions(string Root, long MaxBlobBytes)
+public sealed record BlobStoreOptions(string Root, long MaxBlobBytes, long MinFreeBytes = BlobStoreOptions.DefaultMinFreeBytes)
 {
     public const long DefaultMaxBlobBytes = 2L * 1024 * 1024 * 1024;
+    // Uploads stop while the disk has less than this free, so the database
+    // and the server keep room to work.
+    public const long DefaultMinFreeBytes = 2L * 1024 * 1024 * 1024;
 
     public static BlobStoreOptions From(IConfiguration configuration, IHostEnvironment environment)
     {
         var root = configuration["Yhde:BlobPath"];
         if (string.IsNullOrWhiteSpace(root)) root = Path.Combine(environment.ContentRootPath, "data", "blobs");
-        return new BlobStoreOptions(Path.GetFullPath(root), configuration.GetValue("Yhde:MaxAssetBytes", DefaultMaxBlobBytes));
+        return new BlobStoreOptions(Path.GetFullPath(root), configuration.GetValue("Yhde:MaxAssetBytes", DefaultMaxBlobBytes),
+            configuration.GetValue("Yhde:MinFreeDiskBytes", DefaultMinFreeBytes));
     }
 }
 
@@ -24,6 +28,8 @@ public sealed record BlobStoreOptions(string Root, long MaxBlobBytes)
 public sealed class BlobStore
 {
     public const int HashLength = 64;
+    // Unfinished uploads one uploader may have at once.
+    public const int MaxUnfinishedParts = 64;
     private static readonly TimeSpan PartLifetime = TimeSpan.FromDays(7);
 
     private readonly string _blobs;
@@ -32,12 +38,14 @@ public sealed class BlobStore
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new(StringComparer.Ordinal);
 
     public long MaxBlobBytes { get; }
+    public long MinFreeBytes { get; }
 
     public BlobStore(BlobStoreOptions options, ILogger<BlobStore> logger)
     {
         _blobs = Path.Combine(options.Root, "sha256");
         _uploads = Path.Combine(options.Root, "uploads");
         MaxBlobBytes = options.MaxBlobBytes;
+        MinFreeBytes = options.MinFreeBytes;
         _logger = logger;
         Directory.CreateDirectory(_blobs);
         Directory.CreateDirectory(_uploads);
@@ -68,11 +76,62 @@ public sealed class BlobStore
         return info.Exists ? info.Length : null;
     }
 
-    // How much of an interrupted upload the store already holds.
-    public long PartialLength(string hash)
+    // How much of this uploader's interrupted upload the store already holds.
+    public long PartialLength(string hash, string uploader = "")
     {
-        var info = new FileInfo(PartOf(hash));
+        var info = new FileInfo(PartOf(hash, uploader));
         return info.Exists ? info.Length : 0;
+    }
+
+    // Free space on the store's disk; null when it cannot be read.
+    public long? FreeBytes()
+    {
+        try
+        {
+            return new DriveInfo(Path.GetPathRoot(_blobs)!).AvailableFreeSpace;
+        }
+        catch (Exception ex) when (ex is IOException or ArgumentException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    // Whether `incoming` more bytes would leave less than MinFreeBytes free.
+    public bool LowOnDisk(long incoming) => FreeBytes() is { } free && free - incoming < MinFreeBytes;
+
+    public int UnfinishedParts(string uploader) =>
+        Directory.EnumerateFiles(_uploads, "*." + SafeUploader(uploader) + ".part").Count();
+
+    // A stored file was asked for again: it is in use, so the clean-up after a
+    // project is deleted must not take it now (it keeps files touched within a day).
+    public void Touch(string hash)
+    {
+        try
+        {
+            File.SetLastWriteTimeUtc(PathOf(hash), DateTime.UtcNow);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(ex, "Could not touch blob {Hash}", hash);
+        }
+    }
+
+    // Removes one stored file (a pending upload nobody used). Kept when it
+    // changed within a day: someone may be uploading it again right now.
+    public bool RemoveIfStale(string hash)
+    {
+        var path = PathOf(hash);
+        try
+        {
+            if (!File.Exists(path) || DateTime.UtcNow - File.GetLastWriteTimeUtc(path) < TimeSpan.FromDays(1)) return false;
+            File.Delete(path);
+            return true;
+        }
+        catch (IOException ex)
+        {
+            _logger.LogWarning(ex, "Could not remove unused blob {Hash}", hash);
+            return false;
+        }
     }
 
     public FileStream OpenRead(string hash) =>
@@ -80,7 +139,15 @@ public sealed class BlobStore
 
     public string PathOf(string hash) => Path.Combine(_blobs, hash[..2], hash[2..4], hash);
 
-    private string PartOf(string hash) => Path.Combine(_uploads, hash + ".part");
+    // Each uploader has their own part, so wrong bytes sent by one never reset
+    // another's progress (they meet only when the file is complete).
+    private string PartOf(string hash, string uploader) => Path.Combine(_uploads, $"{hash}.{SafeUploader(uploader)}.part");
+
+    private static string SafeUploader(string uploader)
+    {
+        var s = new string(uploader.Where(c => c is >= 'a' and <= 'z' or >= '0' and <= '9').Take(32).ToArray());
+        return s.Length > 0 ? s : "anon";
+    }
 
     public enum AppendStatus
     {
@@ -95,20 +162,33 @@ public sealed class BlobStore
 
     public sealed record AppendResult(AppendStatus Status, long Offset);
 
-    // Appends `body` to the upload of `hash` at `offset`; `total` is the size
-    // of the whole blob. The last chunk completes the blob after verification.
-    public async Task<AppendResult> AppendAsync(string hash, long offset, long total, Stream body, CancellationToken ct)
+    // Appends `body` to `uploader`'s upload of `hash` at `offset`; `total` is
+    // the size of the whole blob. The last chunk completes the blob after
+    // verification. With `proveBytes` the bytes are taken even when the store
+    // already has the file: a project only gets a file it did not have by
+    // showing the whole of it, never by knowing its hash.
+    public async Task<AppendResult> AppendAsync(string hash, long offset, long total, Stream body, CancellationToken ct,
+        string uploader = "", bool proveBytes = false)
     {
-        if (Exists(hash)) return new(AppendStatus.AlreadyStored, total);
+        if (!proveBytes && Exists(hash))
+        {
+            Touch(hash);
+            return new(AppendStatus.AlreadyStored, total);
+        }
         if (total < 0 || total > MaxBlobBytes) return new(AppendStatus.TooLarge, 0);
 
-        var gate = _locks.GetOrAdd(hash, _ => new SemaphoreSlim(1, 1));
-        if (!await gate.WaitAsync(TimeSpan.FromSeconds(30), ct)) return new(AppendStatus.Busy, PartialLength(hash));
+        var key = hash + "." + SafeUploader(uploader);
+        var gate = _locks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        if (!await gate.WaitAsync(TimeSpan.FromSeconds(30), ct)) return new(AppendStatus.Busy, PartialLength(hash, uploader));
         try
         {
-            if (Exists(hash)) return new(AppendStatus.AlreadyStored, total);
-            var part = PartOf(hash);
-            var current = PartialLength(hash);
+            if (!proveBytes && Exists(hash))
+            {
+                Touch(hash);
+                return new(AppendStatus.AlreadyStored, total);
+            }
+            var part = PartOf(hash, uploader);
+            var current = PartialLength(hash, uploader);
             if (current > total)
             {
                 File.Delete(part); // a previous attempt announced another size
@@ -138,7 +218,7 @@ public sealed class BlobStore
                 ArrayPool<byte>.Shared.Return(buffer);
             }
 
-            var stored = PartialLength(hash);
+            var stored = PartialLength(hash, uploader);
             if (stored < total) return new(AppendStatus.Accepted, stored);
 
             var actual = await HashFileAsync(part, ct);
@@ -149,6 +229,13 @@ public sealed class BlobStore
                 return new(AppendStatus.HashMismatch, 0);
             }
             var destination = PathOf(hash);
+            if (File.Exists(destination))
+            {
+                // Proven, and the store had it already: keep the one copy.
+                File.Delete(part);
+                Touch(hash);
+                return new(AppendStatus.Completed, total);
+            }
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             File.Move(part, destination, overwrite: true);
             _logger.LogInformation("Stored blob {Hash} ({Bytes} bytes)", hash, total);
@@ -239,7 +326,9 @@ public sealed class BlobStore
         return Convert.ToHexStringLower(digest);
     }
 
-    private void RemoveStaleParts()
+    // Unfinished uploads nobody continued for a week (run at start and by
+    // BlobJanitor every hour).
+    public void RemoveStaleParts()
     {
         foreach (var part in Directory.EnumerateFiles(_uploads, "*.part"))
         {

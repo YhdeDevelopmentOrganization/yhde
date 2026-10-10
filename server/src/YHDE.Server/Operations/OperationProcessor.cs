@@ -83,6 +83,18 @@ public sealed class OperationProcessor(
                 "The file already has this content.");
         }
 
+        // 2c. A new name that differs from a file on the branch only in
+        // capitals: on Windows and macOS both are the same file, and editors
+        // there would overwrite each other's.
+        if (submission.Type is OperationType.RegisterAsset or OperationType.MoveAsset && PathOf(submission) is { } path
+            && (await operationRepo.LivePathsDifferingInCaseAsync(branchId, path, ct)) is [var other, ..])
+        {
+            return new SubmitResult.Rejected(
+                submission.ClientOpRef, submission.OpId,
+                RejectionCode.InvalidPayload,
+                $"{other} already exists. {path} differs from it only in capitals, which Windows and macOS treat as the same file: rename one of them.");
+        }
+
         // 3. Commit (durable, one writer per branch, grouped under load)
         // and broadcast after the commit, both inside the committer. A resend
         // of an op already in the log is acknowledged, not committed twice.
@@ -124,6 +136,12 @@ public sealed class OperationProcessor(
     // second registration (same path, same bytes) would only repeat the log.
     // A best-effort check outside the branch lock: a rare concurrent duplicate
     // is still correct, just redundant.
+    private static string? PathOf(OperationSubmission s)
+    {
+        using var doc = JsonDocument.Parse(s.Payload);
+        return doc.RootElement.TryGetProperty("s", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+    }
+
     private async Task<bool> IsAlreadyCurrentAsync(OperationSubmission s, Guid branchId, CancellationToken ct)
     {
         if (s.Type == OperationType.MoveAsset) return false;

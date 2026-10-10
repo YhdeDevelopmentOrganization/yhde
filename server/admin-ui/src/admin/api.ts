@@ -64,7 +64,7 @@ export type Stats = {
   storage: {
     stored: { files: number; bytes: number }
     database: number
-    disk: { free: number; total: number }
+    disk: { free: number; total: number; minFree: number }
     maxFile: number
     byProject: { project: string; files: number; bytes: number }[]
     byKind: { kind: string; files: number; bytes: number }[]
@@ -78,6 +78,7 @@ export type Stats = {
     cpu: number
     requests: number
     errors: number
+    slowDisconnects: number
     runtime: string
     os: string
     cores: number

@@ -83,11 +83,13 @@ public static class AssetRules
     {
         if (string.IsNullOrEmpty(path) || path.Length > MaxPathLength) return false;
         if (!path.StartsWith("res://", StringComparison.Ordinal)) return false;
+        // Control characters: Windows cannot store them in a name.
+        if (path.Any(char.IsControl)) return false;
         if (path.StartsWith(ImportedPrefix, StringComparison.Ordinal))
         {
             var name = path[ImportedPrefix.Length..];
             return name.Length > 0 && !name.StartsWith('.') && !name.Contains('/') && !name.Contains('\\') && !name.Contains(':')
-                && !name.Contains('\0') && name.Trim() == name && !name.EndsWith('.');
+                && !name.Contains('\0') && name.Trim() == name && !name.EndsWith('.') && !IsMachineFile(name);
         }
         var relative = path[6..];
         if (relative.Length == 0 || relative.Contains('\\') || relative.Contains('\0') || relative.Contains(':')) return false;
@@ -101,7 +103,17 @@ public static class AssetRules
             if (isDirectory && segment.StartsWith('.')) return false;
         }
         if (relative.StartsWith("addons/yhde/", StringComparison.OrdinalIgnoreCase)) return false;
-        return true;
+        return !IsMachineFile(segments[^1]);
+    }
+
+    // Per-machine and temporary files, never shared (the editor skips them
+    // too; client/tests/gate/path_rules.json holds the rules both sides check).
+    public static bool IsMachineFile(string name)
+    {
+        var lower = name.ToLowerInvariant();
+        return lower is ".ds_store" or "thumbs.db" or "desktop.ini" or "override.cfg"
+            || lower.EndsWith(".tmp", StringComparison.Ordinal) || lower.EndsWith('~') || lower.EndsWith(".swp", StringComparison.Ordinal)
+            || lower.EndsWith(".yhde-tmp", StringComparison.Ordinal);
     }
 
     private static string? StringField(JsonElement root, string name) =>

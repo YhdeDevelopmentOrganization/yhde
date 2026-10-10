@@ -8,7 +8,34 @@ namespace YHDE.Server.Persistence.Migrations;
 // See deployment.md and database.md (append-only schema conventions).
 public static class Runner
 {
+    // Any fixed number: the lock that keeps two servers starting at the same
+    // moment from running the same migrations twice.
+    private const long LockKey = 0x59484445_4D494752; // "YHDEMIGR"
+
     public static void Run(string connectionString, ILogger logger)
+    {
+        // Held on its own connection for the whole run (session-level lock).
+        using var lockConn = new Npgsql.NpgsqlConnection(connectionString);
+        lockConn.Open();
+        using (var take = new Npgsql.NpgsqlCommand("SELECT pg_advisory_lock(@k)", lockConn))
+        {
+            take.Parameters.AddWithValue("k", LockKey);
+            take.CommandTimeout = 0;
+            take.ExecuteNonQuery();
+        }
+        try
+        {
+            RunLocked(connectionString, logger);
+        }
+        finally
+        {
+            using var release = new Npgsql.NpgsqlCommand("SELECT pg_advisory_unlock(@k)", lockConn);
+            release.Parameters.AddWithValue("k", LockKey);
+            release.ExecuteNonQuery();
+        }
+    }
+
+    private static void RunLocked(string connectionString, ILogger logger)
     {
         var upgrader = DeployChanges.To
             .PostgresqlDatabase(connectionString)

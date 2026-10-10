@@ -1,5 +1,7 @@
 #include "diagnostics/yhde_diagnostics.h"
 
+#include "assets/asset_sync.h"
+#include "core/url.h"
 #include "core/uuid.h"
 #include "sync/scene_document.h"
 #include "sync/variant_codec.h"
@@ -215,7 +217,31 @@ void YhdeDiagnostics::mirror_close(int64_t handle) {
 	mirrors_[size_t(handle)].second.reset();
 }
 
+bool YhdeDiagnostics::may_run_in_editor(const String &path, const String &bytes_file) {
+	return yhde::AssetSync::may_run_in_editor(path, bytes_file);
+}
+
+Dictionary YhdeDiagnostics::parse_url(const String &address) {
+	CharString utf8 = address.utf8();
+	std::string a(utf8.get_data(), size_t(utf8.length()));
+	yhde::url::Parts p = yhde::url::parse(a);
+	Dictionary d;
+	d["ok"] = p.ok;
+	d["scheme"] = String::utf8(p.scheme.c_str());
+	d["host"] = String::utf8(p.host.c_str());
+	d["userinfo"] = p.has_userinfo;
+	d["loopback"] = yhde::url::is_loopback(a);
+	return d;
+}
+
+String YhdeDiagnostics::exclusion_reason(const String &path) {
+	return yhde::AssetSync::exclusion_reason(path);
+}
+
 void YhdeDiagnostics::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("exclusion_reason", "path"), &YhdeDiagnostics::exclusion_reason);
+	ClassDB::bind_method(D_METHOD("may_run_in_editor", "path", "bytes_file"), &YhdeDiagnostics::may_run_in_editor);
+	ClassDB::bind_method(D_METHOD("parse_url", "address"), &YhdeDiagnostics::parse_url);
 	ClassDB::bind_method(D_METHOD("mirror_open", "path", "a", "b"), &YhdeDiagnostics::mirror_open);
 	ClassDB::bind_method(D_METHOD("mirror_step", "handle"), &YhdeDiagnostics::mirror_step);
 	ClassDB::bind_method(D_METHOD("mirror_close", "handle"), &YhdeDiagnostics::mirror_close);

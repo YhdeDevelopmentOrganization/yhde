@@ -498,20 +498,126 @@ void SyncEngine::settle(double now) {
 	}
 }
 
-void SyncEngine::bury(const std::vector<uint64_t> &nodes, bool immediately) {
-	for (uint64_t id : nodes) graveyard_.emplace_back(id, immediately ? 0.0 : now_ + kGraveGrace);
+void SyncEngine::bury(const std::vector<uint64_t> &nodes, bool immediately, Node *scene, const NodePath &remap) {
+	EditorInterface *ei = EditorInterface::get_singleton();
+	Node *current = ei ? ei->get_edited_scene_root() : nullptr;
+	for (uint64_t id : nodes) {
+		Grave g;
+		g.node = id;
+		g.after = immediately ? 0.0 : now_ + kGraveGrace;
+		g.scene = scene ? scene->get_instance_id() : 0;
+		// From the tab on screen, the editor's selection lets go of a node as
+		// it leaves the tree; from a background tab it does not.
+		g.shown = !scene || scene == current;
+		g.remap = remap;
+		graveyard_.push_back(g);
+	}
+}
+
+// The tab that was just shown restored its selection, which may name nodes
+// that left it while it was in the background: select their replacements
+// (or nothing), then let them go after the grace time.
+void SyncEngine::fix_restored_selection(Node *current_root) {
+	if (!current_root) return;
+	uint64_t root_id = current_root->get_instance_id();
+	EditorInterface *ei = EditorInterface::get_singleton();
+	EditorSelection *sel = ei ? ei->get_selection() : nullptr;
+	Object *inspected = ei && ei->get_inspector() ? ei->get_inspector()->get_edited_object() : nullptr;
+	bool replaced = false;
+	for (Grave &g : graveyard_) {
+		if (g.shown || g.scene != root_id) continue;
+		replaced = replaced || !g.remap.is_empty();
+		g.shown = true;
+		g.after = now_ + kGraveGrace;
+		Node *gone = Object::cast_to<Node>(ObjectDB::get_instance(g.node));
+		if (!gone || !sel) continue;
+		TypedArray<Node> selected = sel->get_selected_nodes();
+		Node *inspect_instead = nullptr;
+		bool inspected_gone = false;
+		for (int64_t i = 0; i < selected.size(); i++) {
+			Node *n = Object::cast_to<Node>(selected[i]);
+			if (!n || !(n == gone || gone->is_ancestor_of(n))) continue;
+			sel->remove_node(n);
+			Node *instead = nullptr;
+			if (!g.remap.is_empty()) {
+				String rel = n == gone ? String() : String(gone->get_path_to(n));
+				String path = String(g.remap) + (rel.is_empty() ? String() : "/" + rel);
+				instead = current_root->get_node_or_null(NodePath(path));
+				if (instead) sel->add_node(instead);
+			}
+			if (n == inspected) {
+				inspected_gone = true;
+				inspect_instead = instead;
+			}
+		}
+		// The editor refuses to re-select a node outside the tree, but its
+		// history may still inspect it: follow that to the replacement.
+		if (Node *n = Object::cast_to<Node>(inspected); n && !inspected_gone && (n == gone || gone->is_ancestor_of(n))) {
+			inspected_gone = true;
+			if (!g.remap.is_empty()) {
+				String rel = n == gone ? String() : String(gone->get_path_to(n));
+				inspect_instead = current_root->get_node_or_null(NodePath(String(g.remap) + (rel.is_empty() ? String() : "/" + rel)));
+				if (inspect_instead) sel->add_node(inspect_instead); // a second add is ignored
+			}
+		}
+		if (inspected_gone) {
+			if (inspect_instead) {
+				ei->edit_node(inspect_instead);
+			} else {
+				ei->inspect_object(nullptr);
+			}
+		}
+	}
+	// The editor dropped the selection it could not restore: select the same
+	// paths again, which now name the replacements.
+	auto remembered = tab_selection_.find(root_id);
+	if (replaced && sel && sel->get_selected_nodes().is_empty() && remembered != tab_selection_.end()) {
+		Node *last = nullptr;
+		for (const NodePath &p : remembered->second) {
+			if (Node *n = current_root->get_node_or_null(p)) {
+				sel->add_node(n);
+				last = n;
+			}
+		}
+		if (last) ei->edit_node(last);
+	}
+}
+
+void SyncEngine::remember_selection(Node *current_root) {
+	EditorInterface *ei = EditorInterface::get_singleton();
+	EditorSelection *sel = ei ? ei->get_selection() : nullptr;
+	if (!current_root || !sel) return;
+	std::vector<NodePath> paths;
+	TypedArray<Node> selected = sel->get_selected_nodes();
+	for (int64_t i = 0; i < selected.size(); i++) {
+		Node *n = Object::cast_to<Node>(selected[i]);
+		if (n && (n == current_root || current_root->is_ancestor_of(n))) paths.push_back(current_root->get_path_to(n));
+	}
+	tab_selection_[current_root->get_instance_id()] = std::move(paths);
 }
 
 void SyncEngine::sweep_graveyard(double now, bool all) {
+	// Tabs still open, so a node from one never shown since can wait for it.
+	std::set<uint64_t> open;
+	if (EditorInterface *ei = EditorInterface::get_singleton()) {
+		TypedArray<Node> roots = ei->get_open_scene_roots();
+		for (int64_t i = 0; i < roots.size(); i++) {
+			if (Node *r = Object::cast_to<Node>(roots[i])) open.insert(r->get_instance_id());
+		}
+	}
 	for (auto it = graveyard_.begin(); it != graveyard_.end();) {
-		if (!all && now < it->second) {
+		bool waiting_for_tab = !it->shown && it->scene != 0 && open.count(it->scene);
+		// A node the editor may still point at is never freed, even when the
+		// session stops: kept until the editor quits, it costs a little memory;
+		// freed, it crashes the editor when that tab is shown again.
+		if (waiting_for_tab || (!all && now < it->after)) {
 			++it;
 			continue;
 		}
 		// Only free what is still alive and still detached: the editor's undo
 		// history may own it (it frees by id, so this never double-frees) or
 		// may have re-attached it.
-		Node *n = Object::cast_to<Node>(ObjectDB::get_instance(it->first));
+		Node *n = Object::cast_to<Node>(ObjectDB::get_instance(it->node));
 		if (n && !n->get_parent() && !n->is_inside_tree()) n->queue_free();
 		it = graveyard_.erase(it);
 	}
@@ -529,6 +635,10 @@ void SyncEngine::process(double now) {
 		if (oid != edited_root_oid_) {
 			edited_root_oid_ = oid;
 			refresh_requested_ = true;
+			fix_restored_selection(edited);
+		} else if (now - last_selection_note_ >= 0.25) {
+			last_selection_note_ = now;
+			remember_selection(edited);
 		}
 	}
 	if (refresh_requested_ || now - last_refresh_ >= kRefreshInterval) {
@@ -832,7 +942,7 @@ int SyncEngine::apply_to_doc(SyncDocument &doc, std::vector<RemoteOp *> &ops, bo
 	}
 	uint64_t t1 = Time::get_singleton()->get_ticks_usec();
 	doc.finish_batch(ctx);
-	bury(ctx.detached, !live);
+	bury(ctx.detached, !live, live ? doc.root_node() : nullptr);
 	if (debug_) {
 		UtilityFunctions::print("[yhde] applied ", int64_t(ops.size()), " ops to ", doc.path(), live ? " (live)" : " (file)", " apply=",
 				int64_t((t1 - t0) / 1000), "ms finish=", int64_t((Time::get_singleton()->get_ticks_usec() - t1) / 1000), "ms nodes=",
@@ -910,7 +1020,8 @@ void SyncEngine::apply_to_file(const String &path, std::vector<RemoteOp *> &ops)
 				if (base.is_valid()) root = base->instantiate(PackedScene::GEN_EDIT_STATE_MAIN_INHERITED);
 			} else {
 				ClassDBSingleton *db = ClassDBSingleton::get_singleton();
-				if (db->class_exists(cls) && db->is_parent_class(cls, "Node") && db->can_instantiate(cls)) {
+				if (db->class_exists(cls) && db->is_parent_class(cls, "Node") && db->can_instantiate(cls) &&
+						!class_is_blocked(cls, allow_builtin_scripts_)) {
 					root = Object::cast_to<Node>(db->instantiate(cls));
 				}
 			}
@@ -1162,7 +1273,7 @@ void SyncEngine::graft(Node *live, Node *old, Node *fresh, const Ref<SceneState>
 		}
 		if (!s->is_connected(sig, cb)) s->connect(sig, cb, uint32_t(state->get_connection_flags(i)) | Object::CONNECT_PERSIST);
 	}
-	bury({ old->get_instance_id() }, false);
+	bury({ old->get_instance_id() }, false, live, NodePath(path));
 
 	if (sel) {
 		for (const NodePath &p : reselect) {

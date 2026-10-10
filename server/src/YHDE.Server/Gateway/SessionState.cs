@@ -30,5 +30,12 @@ public sealed class SessionState
     // Prevents concurrent writes to the same WebSocket.
     public SemaphoreSlim WriteLock { get; } = new(1, 1);
 
+    // Everything sent to this connection goes through here (Outbox.cs).
+    public Outbox Outbox { get; init; } = new();
+
+    // When the last message arrived (Environment.TickCount64): a connection
+    // silent for longer than the idle timeout is closed (SessionSweeper).
+    public long LastReceivedTicks { get; set; } = Environment.TickCount64;
+
     public bool IsSubscribed => SubscribedBranchId.HasValue;
 }

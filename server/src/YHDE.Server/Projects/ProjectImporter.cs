@@ -15,15 +15,26 @@ public sealed record ImportResult(ProjectInfo Project, int Files, long Bytes, IR
 // editor had shared it, so editors that join get the game the normal way.
 // What editors never share is left out: .godot/ (per-machine caches), the
 // YHDE add-on, hidden folders, and names Windows cannot store.
-public sealed class ProjectImporter(IProjectStore projects, BlobStore blobs, OperationProcessor processor, ILogger<ProjectImporter> logger)
+//
+// The unpacked size is checked while the zip is read (a small zip can unpack
+// to far more than it says), and an import that fails or is cancelled
+// half-way removes its project again, with the files only it used.
+public sealed class ProjectImporter(IProjectStore projects, BlobStore blobs, OperationProcessor processor, ILogger<ProjectImporter> logger,
+    IProjectBlobs? projectBlobs = null, YHDE.Server.Persistence.Database? db = null)
 {
+    public const int MaxEntries = 50_000;
+
     // Fixed namespace for file ids; the same as the editor's (client
     // core/uuid.cpp), so both name a file's operations alike.
     private static readonly byte[] Namespace = Convert.FromHexString("5f0e6c1a9a554f3e8b0b79d2a1c3e4f5");
 
     // `zipPath`: the uploaded zip on disk. `name`: empty to use the game's own
-    // name from project.godot. Throws ImportException for a person-readable problem.
-    public async Task<ImportResult> ImportAsync(string zipPath, string name, CancellationToken ct)
+    // name from project.godot. `room`: how many unpacked bytes may be stored.
+    // `attach`: runs before the import counts as done (giving the project to a
+    // team); if it fails, the project is removed like any failed import.
+    // Throws ImportException for a person-readable problem.
+    public async Task<ImportResult> ImportAsync(string zipPath, string name, CancellationToken ct,
+        long room = long.MaxValue, Func<Guid, CancellationToken, Task>? attach = null)
     {
         using var zip = OpenZip(zipPath);
         var cfg = zip.Entries
@@ -61,36 +72,112 @@ public sealed class ProjectImporter(IProjectStore projects, BlobStore blobs, Ope
             files.Add((entry, path));
         }
         if (files.Count == 0) throw new ImportException("Nothing in this zip can be shared.");
+        if (files.Count > MaxEntries) throw new ImportException($"This zip has more than {MaxEntries} files. Share the game from Godot instead.");
+        // What the zip says it unpacks to; checked again while reading.
+        if (files.Sum(f => f.Entry.Length) > room) throw new ImportException(TooBig);
 
         var project = await projects.CreateAsync(name, ct);
         var session = Guid.NewGuid(); // the import, as one "connection"
         long bytes = 0;
+        long unpacked = 0;
         var imported = 0;
-        // project.godot first, then the files, then their .import / .uid
-        // sidecars, the order editors send them in (assets.md).
-        foreach (var (entry, path) in files.OrderBy(f => Rank(f.Path)).ThenBy(f => f.Path, StringComparer.Ordinal))
+        try
         {
-            (string Hash, long Size)? stored;
-            await using (var s = entry.Open()) stored = await blobs.PutAsync(s, ct);
-            if (stored is not { } blob)
+            // project.godot first, then the files, then their .import / .uid
+            // sidecars, the order editors send them in (assets.md).
+            foreach (var (entry, path) in files.OrderBy(f => Rank(f.Path)).ThenBy(f => f.Path, StringComparer.Ordinal))
             {
-                skipped.Add(path + " (too large)");
-                continue;
+                (string Hash, long Size)? stored;
+                await using (var s = new CountingStream(entry.Open(), entry.Length, room - unpacked))
+                {
+                    stored = await blobs.PutAsync(s, ct);
+                    unpacked += s.BytesRead;
+                }
+                if (stored is not { } blob)
+                {
+                    skipped.Add(path + " (too large)");
+                    continue;
+                }
+                if (projectBlobs is not null) await projectBlobs.AddAsync(project.ProjectId, blob.Hash, blob.Size, "import", referenced: true, ct);
+                var payload = JsonSerializer.Serialize(new Dictionary<string, object> { ["s"] = path, ["h"] = blob.Hash, ["n"] = blob.Size });
+                var submission = new OperationSubmission(Guid.NewGuid(), OperationType.RegisterAsset, FileId(path), payload, Guid.NewGuid(), 0);
+                var result = await processor.ProcessAsync(submission, project.MainBranchId, DevIdentity.ActorId, session, ct);
+                if (result is SubmitResult.Rejected r)
+                {
+                    skipped.Add($"{path} ({r.Reason})");
+                    continue;
+                }
+                bytes += blob.Size;
+                imported++;
             }
-            var payload = JsonSerializer.Serialize(new Dictionary<string, object> { ["s"] = path, ["h"] = blob.Hash, ["n"] = blob.Size });
-            var submission = new OperationSubmission(Guid.NewGuid(), OperationType.RegisterAsset, FileId(path), payload, Guid.NewGuid(), 0);
-            var result = await processor.ProcessAsync(submission, project.MainBranchId, DevIdentity.ActorId, session, ct);
-            if (result is SubmitResult.Rejected r)
-            {
-                skipped.Add($"{path} ({r.Reason})");
-                continue;
-            }
-            bytes += blob.Size;
-            imported++;
+            if (attach is not null) await attach(project.ProjectId, ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Import of {Name} stopped after {Files} files; removing the half-made project", name, imported);
+            await RemoveAsync(project.ProjectId);
+            if (ex is InvalidDataException) throw new ImportException("The zip is damaged: " + ex.Message);
+            throw;
         }
         logger.LogInformation("Imported project {Name}: {Files} files, {Bytes} bytes, {Skipped} skipped",
             name, imported, bytes, skipped.Count);
         return new ImportResult(project, imported, bytes, skipped);
+    }
+
+    private const string TooBig = "The unpacked game does not fit in your storage. Delete a project first, or leave large files out of the zip.";
+
+    // Not cancellable: it runs because the request was cancelled.
+    private async Task RemoveAsync(Guid projectId)
+    {
+        try
+        {
+            await projects.SetArchivedAsync(projectId, true, CancellationToken.None);
+            await projects.DeleteArchivedAsync(projectId, CancellationToken.None);
+            if (db is not null) await Admin.AdminProjectEndpoints.FreeUnusedFiles(db, blobs, logger);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Could not remove the half-imported project {ProjectId}", projectId);
+        }
+    }
+
+    // Reads one zip entry, refusing more bytes than the entry declared or than
+    // the room left: a zip cannot unpack to more than it says.
+    private sealed class CountingStream(Stream inner, long declared, long room) : Stream
+    {
+        public long BytesRead { get; private set; }
+
+        public override int Read(byte[] buffer, int offset, int count) => Count(inner.Read(buffer, offset, count));
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) =>
+            Count(await inner.ReadAsync(buffer, ct));
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) =>
+            ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+
+        private int Count(int n)
+        {
+            BytesRead += n;
+            if (BytesRead > declared) throw new ImportException("The zip is damaged: a file is larger than the zip says.");
+            if (BytesRead > room) throw new ImportException(TooBig);
+            return n;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => BytesRead; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) inner.Dispose();
+            base.Dispose(disposing);
+        }
     }
 
     private static ZipArchive OpenZip(string path)

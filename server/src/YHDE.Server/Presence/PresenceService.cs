@@ -75,8 +75,15 @@ public sealed class PresenceService(
             session.MemberId);
         _entries[session.SessionId] = entry;
 
+        // The same person's older entry whose connection is gone (a reconnect
+        // before the server noticed): it goes now, not at the next sweep.
+        var live = sessions.GetBranchSubscribers(branchId).Select(s => s.SessionId).ToHashSet();
+        foreach (var stale in _entries.Values.Where(e => e.BranchId == branchId && e.MemberId == session.MemberId
+                     && e.SessionId != session.SessionId && !live.Contains(e.SessionId)).ToList())
+            await RemoveAsync(stale.SessionId, ct);
+
         var frame = BuildFrame(new PresenceStatePayload { Entries = [ToPayload(entry)], Full = false });
-        await FanOutAsync(branchId, except: session.SessionId, frame, ct);
+        await FanOutAsync(branchId, except: session.SessionId, frame, ct, droppable: true);
         return entry;
     }
 
@@ -107,12 +114,23 @@ public sealed class PresenceService(
         logger.LogDebug("Presence removed for session {SessionId}", sessionId);
     }
 
-    private async Task FanOutAsync(Guid branchId, Guid except, Frame frame, CancellationToken ct)
+    // Queues only (SessionManager): a stalled peer never holds up the sender.
+    // A cursor update may be skipped for a lagging peer; a leave never is.
+    // Removes every entry whose session is not in `live` (SessionSweeper).
+    public async Task RemoveAllExceptAsync(IReadOnlySet<Guid> live, CancellationToken ct)
+    {
+        foreach (var id in _entries.Keys.Where(id => !live.Contains(id)).ToList())
+            await RemoveAsync(id, ct);
+        foreach (var id in _buckets.Keys.Where(id => !live.Contains(id)).ToList())
+            _buckets.TryRemove(id, out _);
+    }
+
+    private async Task FanOutAsync(Guid branchId, Guid except, Frame frame, CancellationToken ct, bool droppable = false)
     {
         var targets = sessions.GetBranchSubscribers(branchId).Where(s => s.SessionId != except).ToList();
         if (targets.Count == 0) return;
         var wire = Codec.Encode(frame);
-        await Task.WhenAll(targets.Select(s => sessions.SendEncodedAsync(s, wire, ct)));
+        await Task.WhenAll(targets.Select(s => sessions.SendEncodedAsync(s, wire, ct, droppable)));
     }
 
     private static Frame BuildFrame(PresenceStatePayload payload) => new()

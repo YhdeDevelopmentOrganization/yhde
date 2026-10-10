@@ -4,6 +4,61 @@ What changed in each YHDE release. The website's "What's new" page shows the
 same history (`server/admin-ui/src/site/pages/Changelog.tsx`), plus release
 notes published on the admin page.
 
+## v0.6.5 (2026-10-10)
+
+A stability release. Update the server and the add-on together: an add-on
+older than 0.6.5 can still open projects and download files, but a signed-in
+one must update before it can share new files.
+
+### Godot add-on
+
+- No more editor crash after editing a scene that is instanced in another
+  open scene. Switching back to that scene's tab, or pressing Play, used
+  nodes that had already been freed.
+- One entry per teammate: a reconnect no longer leaves a second cursor and
+  avatar behind.
+- Changes the server could not save for a moment are sent again instead of
+  being dropped, and re-syncs after a gap back off instead of all editors
+  asking at once.
+- Applying a big batch of changes no longer freezes the editor: each frame
+  gets a time budget.
+- Files that disappeared while the editor was closed (a branch switch, an
+  unplugged drive) are only deleted for the team after you confirm, also in
+  small projects.
+- YHDE's record of your files is written safely and kept with a backup; a
+  damaged record no longer makes every file look new.
+- File names the server would refuse are reported in the panel instead of
+  never syncing. Names that differ only in capitals (Player.gd and
+  player.gd) are refused, because Windows and macOS treat them as one file.
+- Code from teammates is checked by what a file is, not its name:
+  compressed scenes and resources, other resource types (.material, .theme,
+  .anim) and every C# spelling of [Tool] are held for your approval. A
+  changed autoload in project.godot is pointed out.
+- Your sign-in never travels over plain http:// or ws:// to another
+  computer, a redirect can no longer sign you out, only the server's own
+  pages are opened in the browser, and the sign-in file is readable by you
+  only. A starter project that names an unfamiliar server asks first.
+- Editor classes are never created from a teammate's change, and oversized
+  messages are refused before they use much memory.
+
+### Server and website
+
+- One slow or vanished connection can no longer hold up a whole project:
+  each editor has its own send queue, and silent connections are closed
+  after 60 seconds.
+- Changes committed while someone joins are no longer missed, and undo
+  keeps the log's order.
+- A malformed request or a short database problem is answered instead of
+  closing the connection.
+- Files are served and accepted only for the project they belong to, and
+  view-only access cannot upload. Uploads count toward the owner's storage
+  as they happen, and uploads stop before the disk runs full (the admin page
+  warns first). Unused uploads are cleaned up.
+- A project import checks the unpacked size and cleans up after itself if
+  it fails.
+- Limits on new connections per address, a lock around database migrations,
+  and the old domain forwards to the site again.
+
 ## v0.6.0 (2026-10-04)
 
 YHDE is open source now, and anyone can run their own server

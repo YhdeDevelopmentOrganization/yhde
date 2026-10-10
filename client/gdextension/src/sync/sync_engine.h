@@ -137,7 +137,13 @@ private:
 	void run_idle_scan();
 	void settle(double now);
 	void absorb_drifters(double now);
-	void bury(const std::vector<uint64_t> &nodes, bool immediately);
+	// `scene` is the open scene the nodes came from; `remap` (for a node
+	// replaced by graft) is its path from that scene's root.
+	void bury(const std::vector<uint64_t> &nodes, bool immediately, godot::Node *scene = nullptr,
+			const godot::NodePath &remap = godot::NodePath());
+	void fix_restored_selection(godot::Node *current_root);
+	void remember_selection(godot::Node *current_root);
+	double last_selection_note_ = -100.0;
 	void sweep_graveyard(double now, bool all);
 	void emit_all(std::vector<LocalOp> &ops);
 
@@ -205,7 +211,23 @@ private:
 	double drifters_built_ = -100.0;
 	// Open scenes edited here or by a peer, whose instances elsewhere follow.
 	std::map<godot::String, double> instance_refresh_at_;
-	std::vector<std::pair<uint64_t, double>> graveyard_; // detached node -> free after
+	// Detached nodes waiting to be freed. The editor keeps the selection of a
+	// scene tab that is not shown as raw pointers (EditorData::EditedScene::
+	// selection) and uses them when the tab is shown again or every scene is
+	// saved. So a node from a background tab stays alive until that tab has
+	// been shown (and its restored selection fixed) or closed, then for the
+	// grace time.
+	struct Grave {
+		uint64_t node = 0;
+		double after = 0.0;
+		uint64_t scene = 0;   // root of the scene tab it came from (0: none)
+		bool shown = true;    // that tab was current since the node left
+		godot::NodePath remap; // graft: the replacement's path from the root
+	};
+	std::vector<Grave> graveyard_;
+	// What each scene tab had selected while it was shown, by path from its
+	// root: restored when the editor could not restore it itself.
+	std::map<uint64_t, std::vector<godot::NodePath>> tab_selection_;
 	double now_ = 0.0;
 
 	std::map<godot::String, std::unique_ptr<SyncDocument>> scenes_;

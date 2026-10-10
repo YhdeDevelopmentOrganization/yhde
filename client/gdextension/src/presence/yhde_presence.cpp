@@ -38,6 +38,19 @@ bool YhdePresence::apply(const proto::PresenceState &msg, double now) {
 		} else {
 			p.state = Dictionary();
 		}
+		// One entry per person: a newer session of the same member (a
+		// reconnect, while the server has not noticed the old one died yet)
+		// replaces the older one instead of showing them twice.
+		if (!e.member_id.is_nil()) {
+			for (auto it = peers_.begin(); it != peers_.end();) {
+				if (it->first != e.session_id && it->second.member == e.member_id) {
+					it = peers_.erase(it);
+					roster_changed = true;
+				} else {
+					++it;
+				}
+			}
+		}
 	}
 	return roster_changed;
 }

@@ -30,6 +30,7 @@ struct AssetJob {
 	int64_t size = 0;
 	int64_t offset = 0; // upload: bytes the server already holds
 	std::vector<std::string> hashes;
+	std::string project; // set by submit(): the project the transfer is for
 };
 
 struct AssetResult {
@@ -54,6 +55,9 @@ public:
 	// host over http(s) with the same Authorization header.
 	void start(const std::string &server_url, const std::string &authorization);
 	void stop();
+	// The project later transfers are for (X-YHDE-Project): the server serves
+	// and accepts only that project's files.
+	void set_project(const std::string &project_id);
 	bool running() const { return running_; }
 
 	uint64_t submit(AssetJob job);
@@ -90,6 +94,7 @@ private:
 
 	std::string server_url_;
 	std::string authorization_;
+	std::string project_; // guarded by mutex_
 
 	// Progress of queued and running transfers.
 	int uploads_ = 0;

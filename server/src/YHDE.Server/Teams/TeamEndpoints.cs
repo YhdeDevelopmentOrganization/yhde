@@ -628,8 +628,8 @@ public static class TeamEndpoints
             {
                 await using (var file = File.Create(tmp)) await ctx.Request.Body.CopyToAsync(file, ct);
                 if (new FileInfo(tmp).Length == 0) throw No("Choose the game's zip file.");
-                var result = await importer.ImportAsync(tmp, name, ct);
-                await teams.AttachProjectAsync(result.Project.ProjectId, team.Id, ct);
+                var result = await importer.ImportAsync(tmp, name, ct, room: Math.Max(0, room),
+                    attach: (project, c) => teams.AttachProjectAsync(project, team.Id, c));
                 stats.Invalidate();
                 editors.Forget();
                 return Results.Ok(new { id = result.Project.ProjectId, files = result.Files, skipped = result.Skipped.Count });

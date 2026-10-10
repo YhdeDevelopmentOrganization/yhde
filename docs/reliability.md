@@ -55,6 +55,28 @@ server confirms it, then in the server's log.
 - If the log is ahead of what the editor applied and nothing is waiting, the
   editor re-syncs after a few seconds.
 
+### Slow and silent connections (server)
+
+- Nothing waits for another person's network. Each connection has its own
+  outgoing queue and sender (`Outbox`): the commit loop, presence and chat
+  only add to queues. A connection whose queue passes 64 MiB, or that takes
+  more than 20 seconds to take one message, is cut off; its editor
+  reconnects and catches up from the log, which loses nothing. The admin
+  page counts these ("Slow editors cut off").
+- For a peer that lags, old cursor positions are dropped (a newer one
+  follows); a leave or any operation never is.
+- A connection the server hears nothing from for 60 seconds
+  (`Yhde:IdleTimeoutSeconds`; the editor pings every 5) is closed, and
+  presence entries without a live connection are removed every 10 seconds.
+  A person's newer connection replaces their older entry at once.
+- Subscribing reads the branch head again after the connection receives
+  broadcasts, so an operation committed in between is in the catch-up.
+- Undo and redo go through the branch's one writer, so they keep log order.
+- A request that fails (a malformed id, the database busy for a moment) is
+  answered, never by closing the connection. "Try again" answers (a
+  retryable `Error`, or `TryAgain` for an undo) make the editor send what it
+  is still waiting for again after 3 seconds.
+
 ## 5. Scenes Not Saved
 
 The local cache records, per document, the highest `seq` applied in memory

@@ -169,7 +169,7 @@ public sealed class AdminStats(Database db, BlobStore blobs, BlobStoreOptions bl
             {
                 stored = new { files = _usage.Files, bytes = _usage.Bytes },
                 database = dbBytes,
-                disk = new { free = diskFree, total = diskTotal },
+                disk = new { free = diskFree, total = diskTotal, minFree = blobs.MinFreeBytes },
                 maxFile = blobs.MaxBlobBytes,
                 byProject = files.GroupBy(f => f.project_id).Select(g => new { project = g.Key, files = g.Count(), bytes = g.Sum(f => f.size) }),
                 byKind = files.GroupBy(f => Kind(f.path)).Select(g => new { kind = g.Key, files = g.Count(), bytes = g.Sum(f => f.size) })
@@ -185,6 +185,7 @@ public sealed class AdminStats(Database db, BlobStore blobs, BlobStoreOptions bl
                 cpu = h.CpuPercent,
                 requests = health.RequestsTotal,
                 errors = health.ErrorsTotal,
+                slowDisconnects = (sessions as SessionManager)?.SlowDisconnects ?? 0,
                 runtime = RuntimeInformation.FrameworkDescription,
                 os = RuntimeInformation.OSDescription,
                 cores = Environment.ProcessorCount,

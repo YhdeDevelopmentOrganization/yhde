@@ -35,6 +35,13 @@ public:
 	Dictionary mirror_step(int64_t handle);
 	void mirror_close(int64_t handle);
 
+	// The code-approval gate (AssetSync::may_run_in_editor) on a file.
+	bool may_run_in_editor(const String &path, const String &bytes_file);
+	// Server address rules (core/url.h): {ok, scheme, host, userinfo, loopback}.
+	Dictionary parse_url(const String &address);
+	// Why a project path is not shared ("" when it is): AssetSync::exclusion_reason.
+	String exclusion_reason(const String &path);
+
 	YhdeDiagnostics();
 	~YhdeDiagnostics();
 

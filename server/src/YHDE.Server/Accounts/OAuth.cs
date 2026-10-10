@@ -18,6 +18,8 @@ public sealed class OAuth(AccountOptions options, IHttpClientFactory http)
 
     public sealed record Pending(string Provider, string Verifier, string ReturnTo, Guid? LinkTo, DateTimeOffset Expires);
     private readonly ConcurrentDictionary<string, Pending> _pending = new();
+    private const int MaxPending = 10_000;
+    private long _nextSweepTicks;
 
     public bool Enabled(string provider) => Client(provider) is not null;
 
@@ -34,7 +36,17 @@ public sealed class OAuth(AccountOptions options, IHttpClientFactory http)
     public (string Url, string State) Start(string provider, string baseUrl, string returnTo, Guid? linkTo)
     {
         var (id, _) = Client(provider) ?? throw new InvalidOperationException("Provider not set up");
-        foreach (var (k, v) in _pending) if (v.Expires < DateTimeOffset.UtcNow) _pending.TryRemove(k, out _);
+        // Expired ones go at most once a second; a flood of starts is capped,
+        // dropping the oldest, so memory stays bounded.
+        var now = DateTimeOffset.UtcNow;
+        if (now.UtcTicks >= Interlocked.Read(ref _nextSweepTicks) || _pending.Count >= MaxPending)
+        {
+            Interlocked.Exchange(ref _nextSweepTicks, now.UtcTicks + TimeSpan.TicksPerSecond);
+            foreach (var (k, v) in _pending) if (v.Expires < now) _pending.TryRemove(k, out _);
+            if (_pending.Count >= MaxPending)
+                foreach (var k in _pending.OrderBy(p => p.Value.Expires).Take(_pending.Count - MaxPending + 1).Select(p => p.Key).ToList())
+                    _pending.TryRemove(k, out _);
+        }
         var state = Secrets.NewToken();
         var verifier = Secrets.NewToken();
         _pending[state] = new Pending(provider, verifier, returnTo, linkTo, DateTimeOffset.UtcNow.Add(StateLifetime));

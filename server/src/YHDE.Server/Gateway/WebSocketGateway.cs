@@ -30,7 +30,9 @@ public sealed class WebSocketGateway(
     IConfiguration configuration,
     ILogger<WebSocketGateway> logger,
     SessionLog? sessionLog = null,
-    Teams.StorageQuota? quota = null)
+    Teams.StorageQuota? quota = null,
+    Assets.IProjectBlobs? projectBlobs = null,
+    Assets.BlobStore? blobs = null)
 {
     // Largest accepted client message (a big embedded resource, e.g. tile data
     // or a mesh, can be several MiB). Enforced while reading, before buffering.
@@ -58,6 +60,9 @@ public sealed class WebSocketGateway(
         session.MemberId = grant.UserId ?? session.SessionId; // until Hello names the member
         if (grant.UserName is { Length: > 0 } name) session.MemberName = name;
         sessionManager.Register(session);
+        // This connection's own sender (Outbox.cs): nobody else waits for its network.
+        var sender = Task.Run(() => session.Outbox.RunAsync(socket, session.WriteLock,
+            reason => sessionManager.Disconnect(session, "too slow: " + reason, slow: true), ct));
 
         logger.LogInformation("Session {SessionId} opened for actor {ActorId}", session.SessionId, session.ActorId);
 
@@ -85,11 +90,10 @@ public sealed class WebSocketGateway(
             catch (Exception ex) { logger.LogWarning(ex, "Presence cleanup failed for {SessionId}", session.SessionId); }
             logger.LogInformation("Session {SessionId} closed", session.SessionId);
 
-            if (socket.State == WebSocketState.Open || socket.State == WebSocketState.CloseReceived)
-            {
-                try { await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None); }
-                catch { /* already closed */ }
-            }
+            // Let the last replies go out (briefly), then close.
+            session.Outbox.Complete();
+            await Task.WhenAny(sender, Task.Delay(TimeSpan.FromSeconds(5)));
+            await CloseAsync(session, WebSocketCloseStatus.NormalClosure, "bye");
         }
     }
 
@@ -126,11 +130,14 @@ public sealed class WebSocketGateway(
                 {
                     logger.LogWarning("Session {SessionId} sent a message over {Max} bytes: closing", session.SessionId, _maxFrameBytes);
                     await sessionManager.SendErrorAsync(session, 413, "Message too large.", false, ct);
-                    await socket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message too large", ct);
+                    session.Outbox.Complete();
+                    await Task.Delay(200, ct);
+                    await CloseAsync(session, WebSocketCloseStatus.MessageTooBig, "Message too large");
                     return;
                 }
             } while (!result.EndOfMessage);
 
+            session.LastReceivedTicks = Environment.TickCount64;
             if (ms.Length == 0) continue;
 
             var messageBytes = ms.ToArray();
@@ -175,6 +182,22 @@ public sealed class WebSocketGateway(
             return;
         }
 
+        try
+        {
+            await HandleFrameAsync(session, frame, ct);
+        }
+        catch (Exception ex) when (ex is not (OperationCanceledException or WebSocketException))
+        {
+            // One request failed (a malformed field, the database busy for a
+            // moment): answer it, keep the connection. The editor sends what
+            // it is still waiting for again (reliability.md).
+            logger.LogError(ex, "Session {SessionId}: {Type} failed", session.SessionId, frame.MsgType);
+            await sessionManager.SendErrorAsync(session, 503, "The server could not handle that just now; it will be sent again.", true, ct);
+        }
+    }
+
+    private async Task HandleFrameAsync(SessionState session, Frame frame, CancellationToken ct)
+    {
         switch (frame.MsgType)
         {
             case MessageType.Hello:
@@ -224,8 +247,11 @@ public sealed class WebSocketGateway(
     private async Task HandleSubscribeAsync(SessionState session, Frame frame, CancellationToken ct)
     {
         var msg = Codec.DecodePayload<SubscribePayload>(frame.Payload);
-        var projectId = new Guid(msg.ProjectId);
-        var branchId = new Guid(msg.BranchId);
+        if (!TryId(msg.ProjectId, out var projectId) || !TryId(msg.BranchId, out var branchId))
+        {
+            await sessionManager.SendErrorAsync(session, 400, "Subscribe needs a 16-byte project and branch id.", false, ct);
+            return;
+        }
 
         if (!session.Grant.Allows(projectId))
         {
@@ -256,9 +282,11 @@ public sealed class WebSocketGateway(
         if (sessionLog is not null) await sessionLog.StartAsync(session);
 
         // Fetch the tail needed to bring the client up to head (network_protocol.md),
-        // streamed in bounded pages. Ops committed while paging are also broadcast
-        // live to this (already subscribed) session; clients de-duplicate by seq.
-        var head = branch.HeadSeq;
+        // streamed in bounded pages. The head is read again now that the session
+        // receives broadcasts: an op committed before this point is in the
+        // catch-up, one after it arrives live (clients de-duplicate by seq).
+        // Reading it before subscribing would lose ops committed in between.
+        var head = Math.Max(branch.HeadSeq, (await branchRepo.GetAsync(branchId, ct))?.HeadSeq ?? 0);
         var from = Math.Clamp(msg.LastAckedSeq, 0, head);
         var sent = 0;
         var chunk = new List<CommittedOpPayload>();
@@ -376,27 +404,58 @@ public sealed class WebSocketGateway(
             return;
         }
 
+        if (!TryId(msg.ClientOpRef, out var clientOpRef) || !TryId(msg.OpId, out var opId) || !TryId(msg.TargetId, out var targetId))
+        {
+            await sessionManager.SendErrorAsync(session, 400, "An operation needs 16-byte ids.", false, ct);
+            return;
+        }
+
         // View only: they can look, chat and comment, but not change it.
         if (!session.Grant.CanEdit(session.SubscribedProjectId!.Value))
         {
-            await sessionManager.SendRejectedAsync(session, new Guid(msg.ClientOpRef), new Guid(msg.OpId),
+            await sessionManager.SendRejectedAsync(session, clientOpRef, opId,
                 "Forbidden", "You can view this project but not change it. Ask the project's owner for edit access.", ct);
             return;
         }
 
-        // A new file must fit in the project owner's storage.
-        if (quota is not null && await quota.RefuseAsync(session.SubscribedProjectId!.Value, msg.Type, Encoding.UTF8.GetString(msg.PayloadJson), ct) is { } full)
+        // A file's bytes must be in this project (uploaded here, or already in
+        // its log) before an operation may use them (assets.md).
+        var projectId = session.SubscribedProjectId!.Value;
+        var payloadText = Encoding.UTF8.GetString(msg.PayloadJson);
+        var fileHash = msg.Type is OperationType.RegisterAsset or OperationType.UpdateAsset ? HashOf(payloadText) : null;
+        Assets.ProjectBlob? held = null;
+        if (fileHash is not null && projectBlobs is not null)
         {
-            await sessionManager.SendRejectedAsync(session, new Guid(msg.ClientOpRef), new Guid(msg.OpId), "StorageFull", full, ct);
+            held = await projectBlobs.GetAsync(projectId, fileHash, ct);
+            // The operator's server key may use any stored file (older add-ons
+            // upload without naming the project).
+            if (held is null && ReferenceEquals(session.Grant, AccessGrant.AllProjects) && blobs?.SizeOf(fileHash) is { } size)
+            {
+                await projectBlobs.AddAsync(projectId, fileHash, size, "server", referenced: false, ct);
+                held = new Assets.ProjectBlob(size, false);
+            }
+            if (held is null)
+            {
+                await sessionManager.SendRejectedAsync(session, clientOpRef, opId,
+                    nameof(RejectionCode.AssetMissing), "The file's bytes have not been uploaded to this project.", ct);
+                return;
+            }
+        }
+
+        // A new file must fit in the project owner's storage. An upload to
+        // this project was counted when it was uploaded.
+        if (quota is not null && await quota.RefuseAsync(projectId, msg.Type, payloadText, ct, uploadCounted: held is { Referenced: false }) is { } full)
+        {
+            await sessionManager.SendRejectedAsync(session, clientOpRef, opId, "StorageFull", full, ct);
             return;
         }
 
         var submission = new OperationSubmission(
-            OpId: new Guid(msg.OpId),
+            OpId: opId,
             Type: msg.Type,
-            TargetId: new Guid(msg.TargetId),
-            Payload: Encoding.UTF8.GetString(msg.PayloadJson),
-            ClientOpRef: new Guid(msg.ClientOpRef),
+            TargetId: targetId,
+            Payload: payloadText,
+            ClientOpRef: clientOpRef,
             ParentSeq: msg.ParentSeq);
 
         var result = await processor.ProcessAsync(
@@ -409,7 +468,25 @@ public sealed class WebSocketGateway(
                 session, rejected.ClientOpRef, rejected.OpId,
                 rejected.Code.ToString(), rejected.Reason, ct);
         }
-        // Committed: broadcast already happened inside ProcessAsync.
+        else if (fileHash is not null && held is { Referenced: false } && projectBlobs is not null)
+        {
+            // Committed (and broadcast inside ProcessAsync): the upload is in use now.
+            await projectBlobs.MarkReferencedAsync(projectId, fileHash, ct);
+        }
+    }
+
+    private static string? HashOf(string payload)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(payload);
+            return doc.RootElement.TryGetProperty("h", out var h) && h.ValueKind == System.Text.Json.JsonValueKind.String
+                && Assets.BlobStore.IsValidHash(h.GetString()) ? h.GetString() : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null; // the processor refuses it for being malformed
+        }
     }
 
     private async Task HandleUndoRequestAsync(SessionState session, Frame frame, CancellationToken ct)
@@ -437,11 +514,17 @@ public sealed class WebSocketGateway(
             return;
         }
 
+        var ids = (msg.Ops ?? []).SelectMany(o => new[] { o.OpId, o.TargetId, o.ClientOpRef }).Append(msg.RequestId).Concat(msg.UndoOf ?? []);
+        if (ids.Any(b => b is not { Length: 16 }))
+        {
+            await sessionManager.SendErrorAsync(session, 400, "An undo needs 16-byte ids.", false, ct);
+            return;
+        }
         var request = new UndoService.Request(
             RequestId: new Guid(msg.RequestId),
             Kind: msg.Kind,
-            UndoOf: msg.UndoOf.Select(b => new Guid(b)).ToList(),
-            Ops: msg.Ops.Select(o => new OperationSubmission(
+            UndoOf: msg.UndoOf!.Select(b => new Guid(b)).ToList(),
+            Ops: msg.Ops!.Select(o => new OperationSubmission(
                 OpId: new Guid(o.OpId),
                 Type: o.Type,
                 TargetId: new Guid(o.TargetId),
@@ -449,7 +532,20 @@ public sealed class WebSocketGateway(
                 ClientOpRef: new Guid(o.ClientOpRef),
                 ParentSeq: o.ParentSeq)).ToList());
 
-        var result = await undo.ProcessAsync(
+        // Undoing a delete brings a file back: it must fit in the owner's storage.
+        UndoService.Result? result = null;
+        if (quota is not null)
+        {
+            foreach (var op in request.Ops)
+            {
+                if (await quota.RefuseAsync(session.SubscribedProjectId!.Value, op.Type, op.Payload, ct) is { } full)
+                {
+                    result = UndoService.Result.Refused("StorageFull", full);
+                    break;
+                }
+            }
+        }
+        result ??= await undo.ProcessAsync(
             request, session.SubscribedBranchId!.Value, session.ActorId, session.SessionId, ct);
 
         var reply = new Frame
@@ -466,6 +562,23 @@ public sealed class WebSocketGateway(
             }),
         };
         await sessionManager.SendFrameAsync(session, reply, ct);
+    }
+
+    private static bool TryId(byte[]? bytes, out Guid id)
+    {
+        id = bytes is { Length: 16 } ? new Guid(bytes) : Guid.Empty;
+        return bytes is { Length: 16 };
+    }
+
+    // Closes the socket as the one writer (the sender may be mid-message).
+    private static async Task CloseAsync(SessionState session, WebSocketCloseStatus status, string description)
+    {
+        var socket = session.Socket;
+        if (socket.State is not (WebSocketState.Open or WebSocketState.CloseReceived)) return;
+        if (!await session.WriteLock.WaitAsync(TimeSpan.FromSeconds(5))) { socket.Abort(); return; }
+        try { await socket.CloseAsync(status, description, CancellationToken.None); }
+        catch { /* already closed */ }
+        finally { session.WriteLock.Release(); }
     }
 
     private static CommittedOpPayload MapToCommittedPayload(Operation op) => new()

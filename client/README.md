@@ -85,8 +85,13 @@ the server with an access key, as a real deployment does (`server-bin` is a
 `dotnet publish` of the server).
 
 ```
-# Codec: needs the core built with -DYHDE_DIAGNOSTICS=ON
+# Codec and code-approval gate: need the core built with -DYHDE_DIAGNOSTICS=ON
 GODOT=/path/to/godot tests/codec/run.sh
+GODOT=/path/to/godot tests/gate/run.sh
+
+# Scripts only (no native core): sign-in token guard, add-on updater
+GODOT=/path/to/godot tests/account/run.sh
+GODOT=/path/to/godot tests/updater/run.sh
 
 export YHDE_KEY=local-test-key-0123456789
 
@@ -95,10 +100,17 @@ export YHDE_KEY=local-test-key-0123456789
 GODOT=/path/to/godot tests/e2e/run.sh
 GODOT=/path/to/godot tests/access/run.sh
 
+# Instances: a teammate edits a scene that is instanced in the other editor's
+# open scenes, while that editor holds a node inside the instance
+GODOT=/path/to/godot tests/instances/run.sh
+
 # Resilience: the script stops and restarts the server itself
 SERVER_START="(cd server-bin && Yhde__AccessKey=$YHDE_KEY nohup ./YHDE.Server --urls http://127.0.0.1:5000 > server.log 2>&1 < /dev/null &); sleep 4" \
 SERVER_STOP="pkill -9 -x YHDE.Server" GODOT=/path/to/godot tests/resilience/run.sh
 ```
+
+The MessagePack decoder has a libFuzzer target and a limits test in
+`gdextension/fuzz/` (build commands in the files).
 
 The end-to-end test drives two editors through real undo/redo actions:
 perturbing every stored property of every node (including one node of every

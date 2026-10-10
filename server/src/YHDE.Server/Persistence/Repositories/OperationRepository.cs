@@ -265,6 +265,31 @@ public sealed class OperationRepository(Database db) : IOperationRepository
         return row is null ? null : MapRow(row);
     }
 
+    public async Task<IReadOnlyList<string>> LivePathsDifferingInCaseAsync(Guid branchId, string path, CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        // Every file op that names such a path (as the file or as a move's
+        // source); a path is live unless its latest such op deleted it or
+        // moved it away (idx_operations_asset_path_lower, 017).
+        var rows = await conn.QueryAsync<string>(new CommandDefinition(
+            """
+            WITH touched AS (
+                SELECT seq, type, payload->>'s' AS s, payload->>'f' AS f FROM operations
+                WHERE branch_id = @branchId
+                  AND type IN ('RegisterAsset', 'UpdateAsset', 'MoveAsset', 'DeleteAsset')
+                  AND (lower(payload->>'s') = lower(@path) OR (type = 'MoveAsset' AND lower(payload->>'f') = lower(@path)))
+            ), paths AS (
+                SELECT s AS p FROM touched WHERE lower(s) = lower(@path)
+                UNION SELECT f FROM touched WHERE f IS NOT NULL AND lower(f) = lower(@path)
+            )
+            SELECT p FROM paths
+            WHERE p <> @path AND (
+                SELECT NOT ((t.type = 'DeleteAsset' AND t.s = paths.p) OR (t.type = 'MoveAsset' AND t.f = paths.p))
+                FROM touched t WHERE t.s = paths.p OR t.f = paths.p ORDER BY t.seq DESC LIMIT 1)
+            """, new { branchId, path }, cancellationToken: ct));
+        return rows.ToList();
+    }
+
     public async Task<IReadOnlyList<Operation>> GetTargetOpsAsync(
         Guid branchId, Guid targetId, long afterSeq, string type, CancellationToken ct)
     {

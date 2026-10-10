@@ -126,6 +126,20 @@ wait, and a gap that doesn't close makes the client re-sync.
   then frees it after a short wait, and only if nothing attached it again.
   Editor docks hold raw pointers for a moment, and the undo history may own
   the node (it frees by id, so there's no double free).
+- A node that leaves a scene tab that is not shown (a teammate's delete, or
+  an instance rebuilt after its scene changed) is kept until that tab has
+  been shown again, or closed. The editor saves a background tab's selection
+  as raw pointers and uses them when the tab is shown or every scene is
+  saved (pressing Play); freeing the node earlier crashed the editor.
+  When the tab is shown, the client selects the replacements by
+  path, then frees the old nodes after the usual wait. Nodes still waiting
+  when the session stops are kept until the editor quits.
+- Instances follow their scene: 0.3 s after a scene changes, its instances
+  in the other open scenes are rebuilt in place (`graft`), keeping each
+  instance's own overrides, selection and inspector.
+- No editor class is ever created from an operation: classes of the
+  editor's API (`EditorPlugin`, `EditorSettings`, ...) are refused for nodes
+  and resources alike, as are built-in scripts unless allowed.
 
 ## 7. Nothing Gets Lost
 

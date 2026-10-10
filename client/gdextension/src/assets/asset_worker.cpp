@@ -56,6 +56,7 @@ public:
 
 	bool valid() const { return valid_; }
 	const std::string &prefix() const { return prefix_; }
+	void set_project(const std::string &project) { project_ = project; }
 
 	struct Response {
 		int code = 0;
@@ -73,6 +74,7 @@ public:
 		if (!connect(r)) return r;
 		PackedStringArray headers;
 		if (!authorization_.empty()) headers.push_back(gs("Authorization: " + authorization_));
+		if (!project_.empty()) headers.push_back(gs("X-YHDE-Project: " + project_));
 		for (const std::string &h : extra) headers.push_back(gs(h));
 		Error err = client_->request_raw(method, gs(prefix_ + path), headers, body);
 		if (err != OK) return fail(r, "request failed");
@@ -168,6 +170,7 @@ private:
 
 	Ref<HTTPClient> client_;
 	std::string authorization_;
+	std::string project_;
 	const std::atomic<bool> &stop_;
 	bool valid_ = false;
 	bool tls_ = false;
@@ -289,9 +292,15 @@ void AssetWorker::stop() {
 	running_ = false;
 }
 
+void AssetWorker::set_project(const std::string &project_id) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	project_ = project_id;
+}
+
 uint64_t AssetWorker::submit(AssetJob job) {
 	std::lock_guard<std::mutex> lock(mutex_);
 	job.id = next_id_++;
+	job.project = project_;
 	uint64_t id = job.id;
 	if (job.kind == AssetJob::Kind::Hash) {
 		hash_jobs_.push_back(std::move(job));
@@ -369,6 +378,7 @@ void AssetWorker::transfer_loop() {
 			job = std::move(transfer_jobs_.front());
 			transfer_jobs_.pop_front();
 		}
+		http.set_project(job.project);
 		AssetResult r;
 		r.kind = job.kind;
 		r.id = job.id;
@@ -446,8 +456,13 @@ void AssetWorker::transfer_loop() {
 						r.mismatch = true;
 						break;
 					} else {
-						r.error = res.error.empty() ? "server answered " + std::to_string(res.code) : res.error;
-						r.transient = res.code == 0 || res.code == 423 || res.code >= 500;
+						// The server says why (out of storage, low on disk, view only).
+						String detail = d.get("detail", String());
+						r.error = !detail.is_empty() ? ss(detail)
+								: res.error.empty()  ? "server answered " + std::to_string(res.code)
+													 : res.error;
+						// 507 (storage full) does not pass by trying again soon.
+						r.transient = res.code == 0 || res.code == 423 || (res.code >= 500 && res.code != 507);
 						break;
 					}
 				}

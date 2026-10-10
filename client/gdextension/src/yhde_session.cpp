@@ -1,5 +1,6 @@
 #include "yhde_session.h"
 
+#include "core/url.h"
 #include "sync/variant_codec.h"
 
 #include <godot_cpp/classes/control.hpp>
@@ -26,6 +27,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <random>
+#include <unordered_set>
 
 namespace godot {
 
@@ -40,7 +43,7 @@ const char *kDefaultUrl = "ws://127.0.0.1:5000/ws";
 const char *kDefaultProject = "ffffffff-0000-0000-0000-000000000001";
 const char *kDefaultBranch = "ffffffff-0000-0000-0000-000000000002";
 // Keep in step with addons/yhde/plugin.cfg and the server's ServerInfo.Version.
-const char *kAddonVersion = "0.6.0";
+const char *kAddonVersion = "0.6.5";
 constexpr size_t kMaxSocialBody = 64 * 1024;
 
 constexpr double kPresenceInterval = 1.0 / 15.0;
@@ -49,6 +52,13 @@ constexpr double kSummonSeconds = 20.0; // how long a summon stays in presence
 constexpr double kAckInterval = 1.0;
 constexpr double kGapTimeout = 3.0;
 constexpr size_t kMaxOpsPerFrame = 4000;
+// Time for applying the log per frame: a few heavy operations must not freeze
+// the editor. A catch-up (the person waits for it anyway) may take longer.
+constexpr double kApplyBudgetLive = 0.008;
+constexpr double kApplyBudgetSync = 0.05;
+// Repeated re-syncs wait longer each time (with jitter, so many editors with
+// the same gap do not all ask at once), up to this.
+constexpr double kResyncBackoffMax = 30.0;
 // Leaves room for the frame envelope under the server's message cap.
 constexpr size_t kMaxPayloadBytes = proto::kMaxOutboundFrameBytes - 64 * 1024;
 constexpr int kMaxSelection = 64;
@@ -71,19 +81,6 @@ bool valid_access_key(const String &key) {
 		if (c < 0x21 || c > 0x7E) return false;
 	}
 	return true;
-}
-
-bool is_loopback_url(const String &url) {
-	String rest = url.substr(url.find("://") + 3);
-	String host = rest.get_slice("/", 0).get_slice("?", 0);
-	if (host.contains("@")) host = host.get_slice("@", 1);
-	if (host.begins_with("[")) {
-		host = host.substr(1, host.find("]") - 1);
-	} else {
-		host = host.get_slice(":", 0);
-	}
-	host = host.to_lower();
-	return host == "localhost" || host == "127.0.0.1" || host == "::1";
 }
 
 void restrict_to_owner(const String &path, bool directory) {
@@ -240,9 +237,12 @@ double YhdeSession::now() const {
 bool YhdeSession::start(const String &url, const String &project_id, const String &branch_id, const String &display_name) {
 	if (state_ != STATE_OFFLINE) stop();
 
-	String u = url.strip_edges();
-	if (!(u.begins_with("ws://") || u.begins_with("wss://"))) {
-		emit_notice("Server address must start with ws:// or wss://", NOTICE_ERROR);
+	String typed = url.strip_edges();
+	// Godot refuses an uppercase scheme ("WS://"), so it is written in lowercase.
+	String u = from_std(yhde::url::normalized(to_std(typed)));
+	yhde::url::Parts parts = yhde::url::parse(to_std(u));
+	if (!parts.ok || !(parts.scheme == "ws" || parts.scheme == "wss")) {
+		emit_notice(String("The server address \"") + typed + "\" is not valid: it must look like wss://example.com/ws", NOTICE_ERROR);
 		return false;
 	}
 	if (!Uuid::parse(project_id.strip_edges(), project_id_) || !Uuid::parse(branch_id.strip_edges(), branch_id_)) {
@@ -253,12 +253,21 @@ bool YhdeSession::start(const String &url, const String &project_id, const Strin
 	if (!ei) return false;
 
 	String authorization;
-	String key = load_access_keys().get(u, String());
+	Dictionary keys = load_access_keys();
+	String key = keys.get(u, keys.get(typed, String()));
 	if (!key.is_empty()) {
-		authorization = String("Bearer ") + key;
-		if (u.begins_with("ws://") && !is_loopback_url(u)) {
-			emit_notice(String::utf8("The access key travels unencrypted over ws://: use wss:// for servers on the internet"), NOTICE_WARNING);
+		if (parts.scheme == "ws" && !yhde::url::is_loopback(to_std(u))) {
+			// The key is a bearer token: over ws:// anyone on the way can read it.
+			// YHDE_ALLOW_INSECURE_KEY=1 is for testing on a private network only.
+			if (!OS::get_singleton()->has_environment("YHDE_ALLOW_INSECURE_KEY")) {
+				emit_notice(String::utf8("Not connecting: your sign-in would travel unencrypted over ws:// to ") + from_std(parts.host) +
+								". Use the server's wss:// address.",
+						NOTICE_ERROR);
+				return false;
+			}
+			emit_notice(String::utf8("The access key travels unencrypted over ws:// (YHDE_ALLOW_INSECURE_KEY is set)"), NOTICE_WARNING);
 		}
+		authorization = String("Bearer ") + key;
 	}
 
 	url_ = u;
@@ -312,8 +321,16 @@ void YhdeSession::switch_project(const Uuid &project, const Uuid &branch) {
 	if (!queue_.empty()) {
 		emit_notice(String::num_int64(int64_t(queue_.size())) + " unsent change(s) from last time will be sent", NOTICE_INFO);
 	}
+	asset_.set_project(to_std(project_id_.to_string()));
 	asset_.configure(dir.path_join(stem + ".assets.json"));
 	asset_.load();
+	if (asset_.state_lost()) {
+		// Without it every file here would look like a new local change:
+		// start over as a first join, which asks before anything is shared.
+		emit_notice("YHDE's record of this project's files was damaged, so it checks them again as on a first join.", NOTICE_WARNING);
+		cache_.reset();
+		fresh_join_ = true;
+	}
 	for (const yhde::PendingOp &op : queue_.ops()) {
 		if (!yhde::AssetSync::is_asset_op(op.type)) continue;
 		Variant payload;
@@ -711,7 +728,11 @@ void YhdeSession::_process(double delta) {
 	handle_closed_docs();
 	if (resync_requested_ && state_ == STATE_LIVE) {
 		resync_requested_ = false;
-		subscribe();
+		subscribe(false);
+	}
+	if (resend_at_ >= 0 && t >= resend_at_ && state_ == STATE_LIVE) {
+		resend_at_ = -1.0;
+		queue_.mark_all_unsent();
 	}
 	send_pending();
 	tick_presence();
@@ -729,10 +750,10 @@ void YhdeSession::_process(double delta) {
 	// an operation went missing on the way. Re-sync instead of waiting forever.
 	if (buffer_.empty() && held_.empty() && !syncing_ && !join_pending_ && state_ == STATE_LIVE && head_seq_ > cache_.applied_seq()) {
 		if (stalled_since_ < 0) stalled_since_ = t;
-		if (t - stalled_since_ > kGapTimeout * 2) {
+		if (t - stalled_since_ > kGapTimeout * 2 && t >= resync_not_before_) {
 			stalled_since_ = -1.0;
 			if (debug_) UtilityFunctions::print("[yhde] applied ", cache_.applied_seq(), " < head ", head_seq_, " with nothing pending: re-syncing");
-			subscribe();
+			resync_after_gap(t);
 		}
 	} else {
 		stalled_since_ = -1.0;
@@ -740,12 +761,19 @@ void YhdeSession::_process(double delta) {
 	// A hole in the sequence that does not fill in: re-sync from our watermark.
 	if (!buffer_.empty() && !syncing_ && buffer_.begin()->first > next_seq_) {
 		if (gap_since_ < 0) gap_since_ = t;
-		if (t - gap_since_ > kGapTimeout) {
+		if (t - gap_since_ > kGapTimeout && t >= resync_not_before_) {
 			gap_since_ = -1.0;
-			subscribe();
+			resync_after_gap(t);
 		}
 	} else {
 		gap_since_ = -1.0;
+	}
+	// A minute live without a gap: the next re-sync is quick again.
+	if (state_ == STATE_LIVE && gap_since_ < 0 && stalled_since_ < 0) {
+		if (quiet_since_ < 0) quiet_since_ = t;
+		if (t - quiet_since_ > 60.0) resyncs_in_a_row_ = 0;
+	} else {
+		quiet_since_ = -1.0;
 	}
 
 	if (state_ == STATE_RECONNECTING || state_ == STATE_CONNECTING || state_ == STATE_SYNCING) set_state(state_);
@@ -774,14 +802,17 @@ void YhdeSession::on_closed(const String &reason) {
 	emit_signal("presence_changed");
 }
 
-void YhdeSession::subscribe() {
+void YhdeSession::subscribe(bool fresh_connection) {
 	int64_t from = cache_.resume_seq();
 	next_seq_ = from + 1;
 	buffer_.clear();
 	held_.clear();
 	asset_.clear_incoming();
 	syncing_ = true;
-	queue_.mark_all_unsent();
+	// On a new connection nothing sent before arrived for sure: send it all
+	// again. A re-sync on the same connection keeps what is on its way (the
+	// server answers each one; sending them again only wasted traffic).
+	if (fresh_connection) queue_.mark_all_unsent();
 	proto::Subscribe sub;
 	sub.project_id = project_id_;
 	sub.branch_id = branch_id_;
@@ -817,6 +848,12 @@ void YhdeSession::on_frame(const proto::Frame &frame) {
 		case proto::MsgType::Error: {
 			proto::Error e;
 			if (!proto::decode(frame.payload, e)) return;
+			if (e.retryable) {
+				// A passing problem on the server: what was sent goes again shortly.
+				if (resend_at_ < 0) resend_at_ = now() + 3.0;
+				if (debug_) UtilityFunctions::print("[yhde] server: ", from_std(e.message), " (will resend)");
+				break;
+			}
 			emit_notice(String("Server: ") + from_std(e.message), NOTICE_ERROR);
 			break;
 		}
@@ -902,12 +939,36 @@ void YhdeSession::drain() {
 	// Drop anything we already processed.
 	while (!buffer_.empty() && buffer_.begin()->first < next_seq_) buffer_.erase(buffer_.begin());
 	std::vector<proto::CommittedOp> ready;
-	while (!buffer_.empty() && buffer_.begin()->first == next_seq_ && ready.size() < kMaxOpsPerFrame) {
+	while (!buffer_.empty() && buffer_.begin()->first == next_seq_ && ready.size() < ops_per_frame_) {
 		ready.push_back(std::move(buffer_.begin()->second));
 		buffer_.erase(buffer_.begin());
 		next_seq_++;
 	}
-	if (!ready.empty()) process_committed(ready);
+	if (ready.empty()) return;
+	size_t count = ready.size();
+	double started = double(Time::get_singleton()->get_ticks_usec()) / 1e6;
+	process_committed(ready);
+	double took = double(Time::get_singleton()->get_ticks_usec()) / 1e6 - started;
+	// Fit the next frame's share to the time budget: halve after a frame that
+	// took too long, grow again while frames stay well inside it.
+	double budget = syncing_ ? kApplyBudgetSync : kApplyBudgetLive;
+	if (took > budget && ops_per_frame_ > 8) {
+		ops_per_frame_ = std::max<size_t>(8, ops_per_frame_ / 2);
+	} else if (took < budget / 4 && count >= ops_per_frame_) {
+		ops_per_frame_ = std::min(kMaxOpsPerFrame, ops_per_frame_ * 2);
+	}
+	if (debug_ && took > budget) UtilityFunctions::print("[yhde] applied ", int64_t(count), " ops in ", int64_t(took * 1000), " ms; next frame takes ", int64_t(ops_per_frame_));
+}
+
+void YhdeSession::resync_after_gap(double now) {
+	// 3 s, 6 s, 12 s ... up to 30 s between re-syncs that follow each other,
+	// each with up to a third more at random.
+	static std::mt19937 rng{ std::random_device{}() };
+	double wait = std::min(kResyncBackoffMax, kGapTimeout * double(1 << std::min(resyncs_in_a_row_, 4)));
+	wait *= 1.0 + std::uniform_real_distribution<double>(0.0, 0.33)(rng);
+	resync_not_before_ = now + wait;
+	resyncs_in_a_row_++;
+	subscribe(false);
 }
 
 bool YhdeSession::parse_committed(const proto::CommittedOp &op, yhde::RemoteOp &r) {
@@ -948,17 +1009,25 @@ void YhdeSession::process_committed(std::vector<proto::CommittedOp> &ops) {
 	// Operations wait behind an asset operation whose bytes are not here yet
 	// when they touch the same file or refer to it (a texture assigned right
 	// after it was added); everything else goes ahead.
-	std::vector<std::string> blocked;
+	// A set, and each operation's text is read once: with thousands of files
+	// on their way (a big import), comparing every operation with every
+	// waiting file took seconds per frame.
+	std::unordered_set<std::string> blocked;
 	auto block = [&](const String &path) {
-		if (!path.is_empty()) blocked.push_back(to_std(yhde::AssetSync::key_of(path)));
+		if (!path.is_empty()) blocked.insert(to_std(yhde::AssetSync::key_of(path)));
 	};
 	auto is_blocked = [&](const String &path) {
-		std::string k = to_std(yhde::AssetSync::key_of(path));
-		return std::find(blocked.begin(), blocked.end(), k) != blocked.end();
+		return blocked.count(to_std(yhde::AssetSync::key_of(path))) > 0;
 	};
+	// Whether the JSON names a waiting file: "res://x" or "res://x::sub".
 	auto refers = [&](const std::string &json) {
-		for (const std::string &b : blocked) {
-			if (json.find("\"" + b + "\"") != std::string::npos || json.find("\"" + b + "::") != std::string::npos) return true;
+		for (size_t at = json.find("\"res://"); at != std::string::npos; at = json.find("\"res://", at + 1)) {
+			size_t end = json.find('"', at + 1);
+			if (end == std::string::npos) break;
+			std::string s = json.substr(at + 1, end - at - 1);
+			if (blocked.count(s)) return true;
+			size_t sub = s.find("::");
+			if (sub != std::string::npos && blocked.count(s.substr(0, sub))) return true;
 		}
 		return false;
 	};
@@ -1121,6 +1190,11 @@ void YhdeSession::submit_undo(std::vector<yhde::LocalOp> &ops, uint64_t group, c
 void YhdeSession::on_undo_result(const proto::UndoResult &result) {
 	if (result.status == "committed") {
 		queue_.drop_batch(result.request_id);
+		return;
+	}
+	if (result.code == "TryAgain") {
+		// The server could not save it right now: the same undo goes again.
+		if (resend_at_ < 0) resend_at_ = now() + 3.0;
 		return;
 	}
 	// Refused as an undo (e.g. not the author): the local state already shows
