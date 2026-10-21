@@ -20,6 +20,10 @@
 	reverse_proxy server:8080
 }
 
+# Other websites this server also serves, one file each in deploy/sites/
+# (see the README there). Git ignores them, so updates never touch them.
+import /etc/caddy/sites/*.caddy
+
 # Other addresses that only send visitors on to the site, such as the bare
 # domain and www (./yhde set REDIRECT_FROM example.com,www.example.com).
 # The default is a local name that needs no certificate.
