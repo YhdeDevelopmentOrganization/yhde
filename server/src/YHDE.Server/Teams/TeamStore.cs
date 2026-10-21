@@ -250,6 +250,15 @@ public sealed class TeamStore(Database db)
             "SELECT join_code FROM projects WHERE project_id = @projectId", new { projectId }, cancellationToken: ct));
     }
 
+    // Every project's join code (the admin Overview).
+    public async Task<Dictionary<Guid, string?>> JoinCodesAsync(CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<(Guid project_id, string? join_code)>(new CommandDefinition(
+            "SELECT project_id, join_code FROM projects", cancellationToken: ct));
+        return rows.ToDictionary(r => r.project_id, r => r.join_code);
+    }
+
     public async Task SetJoinCodeAsync(Guid projectId, string? code, CancellationToken ct)
     {
         await using var conn = await db.OpenAsync(ct);

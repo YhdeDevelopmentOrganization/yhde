@@ -20,7 +20,10 @@ public static class AdminProjectEndpoints
 
     public static void MapProjectAdmin(this RouteGroupBuilder secured)
     {
-        secured.MapGet("/stats", async (AdminStats stats, CancellationToken ct) => Results.Ok(await stats.GetAsync(ct)));
+        // The statistics in parts, so each page asks only for what it shows.
+        secured.MapGet("/stats/health", (AdminStats stats) => Results.Ok(stats.Health()));
+        secured.MapGet("/stats/activity", async (AdminStats stats, CancellationToken ct) => Results.Ok(await stats.ActivityAsync(ct)));
+        secured.MapGet("/stats/storage", async (AdminStats stats, CancellationToken ct) => Results.Ok(await stats.StorageAsync(ct)));
 
         // In the editor over a range: hour, day, week, month, quarter, year or all.
         secured.MapGet("/people", async (string? range, AdminStats stats, CancellationToken ct) =>

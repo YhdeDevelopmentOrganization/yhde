@@ -56,6 +56,9 @@ public interface IProjectStore
     // Returns the new invite and the code itself (shown once, never stored).
     Task<(InviteInfo Invite, string Code)> CreateInviteAsync(Guid projectId, string label, CancellationToken ct, Guid? linkId = null);
     Task<IReadOnlyList<InviteInfo>> ListInvitesAsync(Guid projectId, CancellationToken ct);
+    // Every project's invite codes and download links, one query each (the admin Overview).
+    Task<ILookup<Guid, InviteInfo>> ListAllInvitesAsync(CancellationToken ct);
+    Task<ILookup<Guid, LinkInfo>> ListAllLinksAsync(CancellationToken ct);
     Task RevokeInviteAsync(Guid inviteId, CancellationToken ct);
     // The project a live code opens (not revoked, project not archived).
     Task<Guid?> ProjectForCodeAsync(string code, CancellationToken ct);
@@ -249,6 +252,30 @@ public sealed class ProjectStore(Database db) : IProjectStore
             """,
             new { projectId }, cancellationToken: ct));
         return rows.Select(r => r.ToModel()).ToList();
+    }
+
+    public async Task<ILookup<Guid, LinkInfo>> ListAllLinksAsync(CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<LinkRow>(new CommandDefinition(
+            """
+            SELECT link_id, project_id, label, created_at, expires_at, max_uses, uses, revoked_at
+            FROM download_links ORDER BY created_at
+            """,
+            cancellationToken: ct));
+        return rows.Select(r => r.ToModel()).ToLookup(l => l.ProjectId);
+    }
+
+    public async Task<ILookup<Guid, InviteInfo>> ListAllInvitesAsync(CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<InviteRow>(new CommandDefinition(
+            """
+            SELECT invite_id, project_id, label, created_at, revoked_at, link_id
+            FROM project_invites ORDER BY created_at
+            """,
+            cancellationToken: ct));
+        return rows.Select(r => r.ToModel()).ToLookup(i => i.ProjectId);
     }
 
     public async Task<bool> DeleteLinkAsync(Guid linkId, CancellationToken ct)

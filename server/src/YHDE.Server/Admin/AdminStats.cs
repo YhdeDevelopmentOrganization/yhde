@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Dapper;
 using YHDE.Server.Assets;
@@ -6,125 +7,38 @@ using YHDE.Server.Persistence;
 
 namespace YHDE.Server.Admin;
 
-// Everything the admin page charts (admin.md): activity, people, storage
-// and the server's health. Built on request and kept for 30 seconds.
-public sealed class AdminStats(Database db, BlobStore blobs, BlobStoreOptions blobOptions, HealthMonitor health, ISessionManager sessions)
+// Everything the admin page charts (admin.md), in three parts so each page
+// asks only for what it shows:
+//   Health    the server process, disk and connections; no database, never cached.
+//   Activity  changes per day, hour and type, and how many people (30 s).
+//   Storage   file sizes per project and type, the database (5 min).
+// Change counts and file sizes come from the summaries kept as operations
+// are added (018_stats_summaries.sql, ADR 0017), not from the log itself.
+// A part that is out of date is answered from the last result straight away
+// and rebuilt in the background, so a page never waits on the database
+// except the first time after a start.
+public sealed class AdminStats(Database db, BlobStore blobs, BlobStoreOptions blobOptions, HealthMonitor health,
+    ISessionManager sessions, ILogger<AdminStats> logger)
 {
     public const int Days = 30;
-    private static readonly TimeSpan CacheTime = TimeSpan.FromSeconds(30);
-    private readonly SemaphoreSlim _gate = new(1, 1);
-    private (DateTimeOffset At, object Value)? _cache;
-    private (DateTimeOffset At, long Files, long Bytes) _usage;
 
-    public void Invalidate() => _cache = null;
+    private Cached? _activity, _storage;
+    private Cached Activity => _activity ??= new Cached("activity", ActivityBuildAsync, TimeSpan.FromSeconds(30), logger);
+    private Cached Storage => _storage ??= new Cached("storage", StorageBuildAsync, TimeSpan.FromMinutes(5), logger);
 
-    public async Task<object> GetAsync(CancellationToken ct)
+    // After a project is made, imported or deleted: the next ask waits for fresh numbers.
+    public void Invalidate()
     {
-        if (_cache is { } c && DateTimeOffset.UtcNow - c.At < CacheTime) return c.Value;
-        await _gate.WaitAsync(ct);
-        try
-        {
-            if (_cache is { } c2 && DateTimeOffset.UtcNow - c2.At < CacheTime) return c2.Value;
-            var value = await BuildAsync(ct);
-            _cache = (DateTimeOffset.UtcNow, value);
-            return value;
-        }
-        finally
-        {
-            _gate.Release();
-        }
+        _activity?.Invalidate();
+        _storage?.Invalidate();
     }
 
-    private async Task<object> BuildAsync(CancellationToken ct)
+    public Task<object> ActivityAsync(CancellationToken ct) => Activity.GetAsync(ct);
+    public Task<object> StorageAsync(CancellationToken ct) => Storage.GetAsync(ct);
+
+    public object Health()
     {
-        await using var conn = await db.OpenAsync(ct);
-        var p = new { days = Days };
-        CommandDefinition Q(string sql) => new(sql, p, commandTimeout: 120, cancellationToken: ct);
-
-        // Activity
-        var activity = await conn.QueryAsync<(DateTime day, Guid project_id, long n)>(Q(
-            """
-            SELECT date_trunc('day', o.created_at AT TIME ZONE 'UTC') AS day, b.project_id, COUNT(*) AS n
-            FROM operations o JOIN branches b ON b.branch_id = o.branch_id
-            WHERE o.created_at > NOW() - make_interval(days => @days)
-            GROUP BY 1, 2 ORDER BY 1
-            """));
-        var heat = await conn.QueryAsync<(int dow, int hour, long n)>(Q(
-            """
-            SELECT EXTRACT(ISODOW FROM created_at AT TIME ZONE 'UTC')::int AS dow,
-                   EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC')::int AS hour, COUNT(*) AS n
-            FROM operations WHERE created_at > NOW() - make_interval(days => @days)
-            GROUP BY 1, 2
-            """));
-        var kinds = await conn.QueryAsync<(string type, long n)>(Q(
-            """
-            SELECT type, COUNT(*) AS n FROM operations
-            WHERE created_at > NOW() - make_interval(days => @days) GROUP BY 1 ORDER BY 2 DESC
-            """));
-        var totals = await conn.QuerySingleAsync<(long all_ops, long today, long week)>(Q(
-            """
-            SELECT COUNT(*) AS all_ops,
-                   COUNT(*) FILTER (WHERE created_at > date_trunc('day', NOW())) AS today,
-                   COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days') AS week
-            FROM operations
-            """));
-
-        // People
-        var people = (await conn.QueryAsync<PersonRow>(Q(
-            $"""
-            SELECT member_id,
-                   (array_agg(member_name ORDER BY started_at DESC))[1] AS name,
-                   COUNT(*) AS sessions,
-                   COALESCE(SUM(EXTRACT(EPOCH FROM COALESCE(ended_at, last_seen_at) - started_at)), 0)::bigint AS seconds,
-                   MAX(COALESCE(ended_at, last_seen_at)) AS last_seen,
-                   MIN(started_at) AS first_seen,
-                   (array_agg(client_version ORDER BY started_at DESC))[1] AS version
-            FROM session_log sl WHERE member_id IS NOT NULL AND {Person}
-            GROUP BY member_id
-            """))).ToList();
-        var changesBy = (await conn.QueryAsync<(Guid member_id, long n)>(Q(
-            """
-            SELECT sl.member_id, COUNT(*) AS n
-            FROM operations o JOIN session_log sl ON sl.session_id = o.session_id
-            WHERE o.created_at > NOW() - make_interval(days => @days) AND sl.member_id IS NOT NULL
-            GROUP BY 1
-            """))).ToDictionary(r => r.member_id, r => r.n);
-        var chatBy = (await conn.QueryAsync<(Guid author_id, long n)>(Q(
-            "SELECT author_id, COUNT(*) AS n FROM chat_messages GROUP BY 1"))).ToDictionary(r => r.author_id, r => r.n);
-        var commentsBy = (await conn.QueryAsync<(Guid author_id, long n)>(Q(
-            "SELECT author_id, COUNT(*) AS n FROM comment_messages WHERE deleted_at IS NULL GROUP BY 1"))).ToDictionary(r => r.author_id, r => r.n);
-        var projectsBy = (await conn.QueryAsync<(Guid member_id, string name)>(Q(
-            """
-            SELECT DISTINCT sl.member_id, p.name FROM session_log sl JOIN projects p ON p.project_id = sl.project_id
-            WHERE sl.member_id IS NOT NULL
-            """))).GroupBy(r => r.member_id).ToDictionary(g => g.Key, g => g.Select(r => r.name).OrderBy(n => n).ToArray());
-        var dailyPeople = await conn.QueryAsync<(DateTime day, long n)>(Q(
-            $"""
-            SELECT date_trunc('day', started_at AT TIME ZONE 'UTC') AS day, COUNT(DISTINCT member_id) AS n
-            FROM session_log sl WHERE started_at > NOW() - make_interval(days => @days) AND member_id IS NOT NULL AND {Person} GROUP BY 1 ORDER BY 1
-            """));
-        var online = sessions.All.Where(s => s.IsSubscribed).Select(s => s.MemberId).ToHashSet();
-
-        // Storage
-        var files = (await conn.QueryAsync<(Guid project_id, string path, long size)>(Q(
-            """
-            WITH latest AS (
-                SELECT DISTINCT ON (o.branch_id, o.target_id) b.project_id, o.type,
-                       o.payload->>'s' AS path, COALESCE((o.payload->>'n')::bigint, 0) AS size
-                FROM operations o JOIN branches b ON b.branch_id = o.branch_id
-                WHERE o.type IN ('RegisterAsset', 'UpdateAsset', 'MoveAsset', 'DeleteAsset')
-                ORDER BY o.branch_id, o.target_id, o.seq DESC
-            )
-            SELECT project_id, path, size FROM latest WHERE type <> 'DeleteAsset' AND path IS NOT NULL
-            """))).ToList();
-        var dbBytes = await conn.ExecuteScalarAsync<long>(Q("SELECT pg_database_size(current_database())"));
-
-        var now = DateTimeOffset.UtcNow;
-        if (now - _usage.At > TimeSpan.FromMinutes(1))
-        {
-            var (count, bytes) = blobs.Usage();
-            _usage = (now, count, bytes);
-        }
+        var h = health.Now();
         long diskFree = 0, diskTotal = 0;
         try
         {
@@ -133,71 +47,150 @@ public sealed class AdminStats(Database db, BlobStore blobs, BlobStoreOptions bl
             diskTotal = drive.TotalSize;
         }
         catch (Exception e) when (e is IOException or ArgumentException or UnauthorizedAccessException) { }
+        return new
+        {
+            started = HealthMonitor.Started,
+            connections = h.Connections,
+            editing = h.Editing,
+            memoryMb = Math.Round(h.MemoryMb, 1),
+            cpu = h.CpuPercent,
+            requests = health.RequestsTotal,
+            errors = health.ErrorsTotal,
+            slowDisconnects = (sessions as SessionManager)?.SlowDisconnects ?? 0,
+            runtime = RuntimeInformation.FrameworkDescription,
+            os = RuntimeInformation.OSDescription,
+            cores = Environment.ProcessorCount,
+            disk = new { free = diskFree, total = diskTotal, minFree = blobs.MinFreeBytes },
+            // How long the statistics last took to build (the database's share of this page).
+            statsMs = new { activity = _activity?.LastMs, storage = _storage?.LastMs },
+            samples = health.Samples().Select(s => new { at = s.At, s.Connections, s.Editing, memoryMb = Math.Round(s.MemoryMb, 1), cpu = s.CpuPercent, s.Requests, s.Errors }),
+        };
+    }
 
-        var h = health.Now();
+    // A session with a session_log row is an editor; others are the server
+    // itself, such as a project imported from a zip (ProjectImporter).
+    private const string FromEditor = "EXISTS (SELECT 1 FROM session_log sl WHERE sl.session_id = h.session_id)";
+
+    private async Task<object> ActivityBuildAsync(CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        var p = new { days = Days };
+        CommandDefinition Q(string sql) => new(sql, p, commandTimeout: 120, cancellationToken: ct);
+
+        var daily = await conn.QueryAsync<(DateTime day, Guid project_id, long n)>(Q(
+            $"""
+            SELECT date_trunc('day', h.hour AT TIME ZONE 'UTC') AS day, h.project_id, SUM(h.n)::bigint AS n
+            FROM op_hourly h
+            WHERE h.hour > NOW() - make_interval(days => @days) AND {FromEditor}
+            GROUP BY 1, 2 ORDER BY 1
+            """));
+        var heat = await conn.QueryAsync<(int dow, int hour, long n)>(Q(
+            $"""
+            SELECT EXTRACT(ISODOW FROM h.hour AT TIME ZONE 'UTC')::int AS dow,
+                   EXTRACT(HOUR FROM h.hour AT TIME ZONE 'UTC')::int AS hour, SUM(h.n)::bigint AS n
+            FROM op_hourly h
+            WHERE h.hour > NOW() - make_interval(days => @days) AND {FromEditor}
+            GROUP BY 1, 2
+            """));
+        var kinds = await conn.QueryAsync<(string type, long n)>(Q(
+            """
+            SELECT type, SUM(n)::bigint AS n FROM op_hourly
+            WHERE hour > NOW() - make_interval(days => @days) GROUP BY 1 ORDER BY 2 DESC
+            """));
+        var totals = await conn.QuerySingleAsync<(long all_ops, long today, long week, long imported_today, long imported_week)>(Q(
+            $"""
+            SELECT COALESCE(SUM(n), 0)::bigint AS all_ops,
+                   COALESCE(SUM(n) FILTER (WHERE editor AND hour >= date_trunc('day', NOW())), 0)::bigint AS today,
+                   COALESCE(SUM(n) FILTER (WHERE editor AND hour >= date_trunc('hour', NOW() - INTERVAL '7 days')), 0)::bigint AS week,
+                   COALESCE(SUM(n) FILTER (WHERE NOT editor AND hour >= date_trunc('day', NOW())), 0)::bigint AS imported_today,
+                   COALESCE(SUM(n) FILTER (WHERE NOT editor AND hour >= date_trunc('hour', NOW() - INTERVAL '7 days')), 0)::bigint AS imported_week
+            FROM (SELECT h.n, h.hour, {FromEditor} AS editor FROM op_hourly h) x
+            """));
+        var people = await conn.ExecuteScalarAsync<long>(Q(
+            $"""
+            SELECT COUNT(DISTINCT member_id) FROM session_log sl
+            WHERE member_id IS NOT NULL AND COALESCE(ended_at, last_seen_at) > NOW() - make_interval(days => @days) AND {Person}
+            """));
+
         return new
         {
             days = Days,
-            generated = now,
-            activity = new
+            generated = DateTimeOffset.UtcNow,
+            daily = daily.Select(a => new { day = Utc(a.day), project = a.project_id, n = a.n }),
+            heat = heat.Select(x => new { x.dow, x.hour, x.n }),
+            kinds = kinds.Select(k => new { k.type, k.n }),
+            totals = new
             {
-                daily = activity.Select(a => new { day = Utc(a.day), project = a.project_id, n = a.n }),
-                heat = heat.Select(x => new { x.dow, x.hour, x.n }),
-                kinds = kinds.Select(k => new { k.type, k.n }),
-                totals = new { all = totals.all_ops, today = totals.today, week = totals.week },
+                all = totals.all_ops,
+                today = totals.today,
+                week = totals.week,
+                importedToday = totals.imported_today,
+                importedWeek = totals.imported_week,
             },
-            people = new
-            {
-                list = people.Select(r => new
-                {
-                    id = r.member_id,
-                    name = r.name,
-                    sessions = r.sessions,
-                    seconds = r.seconds,
-                    lastSeen = Utc(r.last_seen),
-                    firstSeen = Utc(r.first_seen),
-                    version = r.version,
-                    online = online.Contains(r.member_id),
-                    changes = changesBy.GetValueOrDefault(r.member_id),
-                    chat = chatBy.GetValueOrDefault(r.member_id),
-                    comments = commentsBy.GetValueOrDefault(r.member_id),
-                    projects = projectsBy.GetValueOrDefault(r.member_id, []),
-                }).OrderByDescending(r => r.online).ThenByDescending(r => r.lastSeen),
-                daily = dailyPeople.Select(d => new { day = Utc(d.day), d.n }),
-            },
-            storage = new
-            {
-                stored = new { files = _usage.Files, bytes = _usage.Bytes },
-                database = dbBytes,
-                disk = new { free = diskFree, total = diskTotal, minFree = blobs.MinFreeBytes },
-                maxFile = blobs.MaxBlobBytes,
-                byProject = files.GroupBy(f => f.project_id).Select(g => new { project = g.Key, files = g.Count(), bytes = g.Sum(f => f.size) }),
-                byKind = files.GroupBy(f => Kind(f.path)).Select(g => new { kind = g.Key, files = g.Count(), bytes = g.Sum(f => f.size) })
-                    .OrderByDescending(k => k.bytes),
-                biggest = files.OrderByDescending(f => f.size).Take(10).Select(f => new { project = f.project_id, f.path, f.size }),
-            },
-            health = new
-            {
-                started = HealthMonitor.Started,
-                connections = h.Connections,
-                editing = h.Editing,
-                memoryMb = Math.Round(h.MemoryMb, 1),
-                cpu = h.CpuPercent,
-                requests = health.RequestsTotal,
-                errors = health.ErrorsTotal,
-                slowDisconnects = (sessions as SessionManager)?.SlowDisconnects ?? 0,
-                runtime = RuntimeInformation.FrameworkDescription,
-                os = RuntimeInformation.OSDescription,
-                cores = Environment.ProcessorCount,
-                samples = health.Samples().Select(s => new { at = s.At, s.Connections, s.Editing, memoryMb = Math.Round(s.MemoryMb, 1), cpu = s.CpuPercent, s.Requests, s.Errors }),
-            },
+            people,
+        };
+    }
+
+    private (DateTimeOffset At, long Files, long Bytes) _usage;
+
+    private async Task<object> StorageBuildAsync(CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        CommandDefinition Q(string sql) => new(sql, commandTimeout: 120, cancellationToken: ct);
+
+        // Each project's files, a file kept twice in one project counted once.
+        var byProject = await conn.QueryAsync<(Guid project_id, long files, long bytes)>(Q(
+            """
+            SELECT project_id, COUNT(*) AS files, COALESCE(SUM(size), 0)::bigint AS bytes
+            FROM (SELECT DISTINCT project_id, COALESCE(hash, target_id::text) AS k, size
+                  FROM asset_heads WHERE type <> 'DeleteAsset' AND path IS NOT NULL) x
+            GROUP BY 1
+            """));
+        // By extension, each stored file counted once however many projects use
+        // it, so the types add up to no more than what is stored.
+        var byExt = await conn.QueryAsync<(string ext, long files, long bytes)>(Q(
+            """
+            SELECT COALESCE(lower(substring(path FROM '\.([^./]+)$')), '') AS ext, COUNT(*) AS files, COALESCE(SUM(size), 0)::bigint AS bytes
+            FROM (SELECT DISTINCT ON (COALESCE(hash, target_id::text)) path, size
+                  FROM asset_heads WHERE type <> 'DeleteAsset' AND path IS NOT NULL
+                  ORDER BY COALESCE(hash, target_id::text)) x
+            GROUP BY 1
+            """));
+        var biggest = await conn.QueryAsync<(Guid project_id, string path, long size)>(Q(
+            """
+            SELECT project_id, path, size FROM (
+                SELECT DISTINCT ON (project_id, path) project_id, path, size
+                FROM asset_heads WHERE type <> 'DeleteAsset' AND path IS NOT NULL
+                ORDER BY project_id, path, size DESC
+            ) x ORDER BY size DESC LIMIT 10
+            """));
+        var dbBytes = await conn.ExecuteScalarAsync<long>(Q("SELECT pg_database_size(current_database())"));
+
+        var now = DateTimeOffset.UtcNow;
+        if (now - _usage.At > TimeSpan.FromMinutes(1))
+        {
+            var (count, bytes) = blobs.Usage();
+            _usage = (now, count, bytes);
+        }
+
+        return new
+        {
+            stored = new { files = _usage.Files, bytes = _usage.Bytes },
+            database = dbBytes,
+            maxFile = blobs.MaxBlobBytes,
+            byProject = byProject.Select(r => new { project = r.project_id, r.files, r.bytes }),
+            byKind = byExt.GroupBy(r => Kind("x." + r.ext))
+                .Select(g => new { kind = g.Key, files = g.Sum(r => r.files), bytes = g.Sum(r => r.bytes) })
+                .OrderByDescending(k => k.bytes),
+            biggest = biggest.Select(f => new { project = f.project_id, f.path, f.size }),
         };
     }
 
     // In the editor, over a range: people, time online and changes per
     // bucket, and each person's numbers in the range. Only people who still
     // have an account, and guests from invite codes, count: a deleted account
-    // is gone from here too (TeamStore.DeleteUserAsync).
+    // is gone from here too (TeamStore.DeleteUserAsync). Changes are the ones
+    // made in the editor: imports belong to nobody.
     public static readonly string[] Ranges = ["hour", "day", "week", "month", "quarter", "year", "all"];
     private const string Person = "(sl.via = 'invite code' OR EXISTS (SELECT 1 FROM users u WHERE u.user_id = sl.member_id))";
 
@@ -215,6 +208,9 @@ public sealed class AdminStats(Database db, BlobStore blobs, BlobStoreOptions bl
         var from = starts[0];
         var p = new { starts, ends, from, now };
         CommandDefinition Q(string sql) => new(sql, p, commandTimeout: 120, cancellationToken: ct);
+        // Buckets of an hour or more line up with the hourly summary; the
+        // last hour in 5-minute steps reads the (small) end of the log.
+        var hourly = unit != "5min";
 
         var online = (await conn.QueryAsync<(long i, long people, double seconds)>(Q(
             $"""
@@ -225,13 +221,21 @@ public sealed class AdminStats(Database db, BlobStore blobs, BlobStoreOptions bl
             WHERE sl.member_id IS NOT NULL AND {Person}
             GROUP BY b.i
             """))).ToDictionary(r => r.i);
-        var changes = (await conn.QueryAsync<(long i, long n)>(Q(
-            """
-            SELECT b.i, COUNT(o.op_id) AS n
-            FROM unnest(@starts::timestamptz[], @ends::timestamptz[]) WITH ORDINALITY AS b(s, e, i)
-            JOIN operations o ON o.created_at >= b.s AND o.created_at < b.e
-            GROUP BY b.i
-            """))).ToDictionary(r => r.i, r => r.n);
+        var changes = (await conn.QueryAsync<(long i, long n)>(Q(hourly
+            ? $"""
+              SELECT b.i, SUM(h.n)::bigint AS n
+              FROM unnest(@starts::timestamptz[], @ends::timestamptz[]) WITH ORDINALITY AS b(s, e, i)
+              JOIN op_hourly h ON h.hour >= b.s AND h.hour < b.e
+              WHERE {FromEditor}
+              GROUP BY b.i
+              """
+            : """
+              SELECT b.i, COUNT(o.op_id) AS n
+              FROM unnest(@starts::timestamptz[], @ends::timestamptz[]) WITH ORDINALITY AS b(s, e, i)
+              JOIN operations o ON o.created_at >= b.s AND o.created_at < b.e
+              WHERE EXISTS (SELECT 1 FROM session_log sl WHERE sl.session_id = o.session_id)
+              GROUP BY b.i
+              """))).ToDictionary(r => r.i, r => r.n);
 
         var people = (await conn.QueryAsync<RangePersonRow>(Q(
             $"""
@@ -248,11 +252,15 @@ public sealed class AdminStats(Database db, BlobStore blobs, BlobStoreOptions bl
                 GROUP BY sl.member_id
             ) x LEFT JOIN users u ON u.user_id = x.member_id
             """))).ToList();
-        var changesBy = (await conn.QueryAsync<(Guid member_id, long n)>(Q(
-            """
-            SELECT sl.member_id, COUNT(*) AS n FROM operations o JOIN session_log sl ON sl.session_id = o.session_id
-            WHERE o.created_at >= @from AND sl.member_id IS NOT NULL GROUP BY 1
-            """))).ToDictionary(r => r.member_id, r => r.n);
+        var changesBy = (await conn.QueryAsync<(Guid member_id, long n)>(Q(hourly
+            ? """
+              SELECT sl.member_id, SUM(h.n)::bigint AS n FROM op_hourly h JOIN session_log sl ON sl.session_id = h.session_id
+              WHERE h.hour >= @from AND sl.member_id IS NOT NULL GROUP BY 1
+              """
+            : """
+              SELECT sl.member_id, COUNT(*) AS n FROM operations o JOIN session_log sl ON sl.session_id = o.session_id
+              WHERE o.created_at >= @from AND sl.member_id IS NOT NULL GROUP BY 1
+              """))).ToDictionary(r => r.member_id, r => r.n);
         var chatBy = (await conn.QueryAsync<(Guid author_id, long n)>(Q(
             "SELECT author_id, COUNT(*) AS n FROM chat_messages WHERE created_at >= @from GROUP BY 1"))).ToDictionary(r => r.author_id, r => r.n);
         var commentsBy = (await conn.QueryAsync<(Guid author_id, long n)>(Q(
@@ -347,18 +355,77 @@ public sealed class AdminStats(Database db, BlobStore blobs, BlobStoreOptions bl
 
     private static DateTimeOffset Utc(DateTime t) => new(DateTime.SpecifyKind(t, DateTimeKind.Utc));
 
-#pragma warning disable IDE1006 // column names
-    private sealed class PersonRow
+    // One part of the statistics: built once, then answered from the last
+    // result while a newer one is built in the background.
+    private sealed class Cached(string name, Func<CancellationToken, Task<object>> build, TimeSpan freshFor, ILogger logger)
     {
-        public Guid member_id { get; init; }
-        public string name { get; init; } = "";
-        public long sessions { get; init; }
-        public long seconds { get; init; }
-        public DateTime last_seen { get; init; }
-        public DateTime first_seen { get; init; }
-        public string version { get; init; } = "";
+        private readonly SemaphoreSlim _gate = new(1, 1);
+        private (DateTimeOffset At, object Value)? _last;
+        private int _refreshing;
+
+        public long? LastMs { get; private set; }
+
+        public void Invalidate() => _last = null;
+
+        public async Task<object> GetAsync(CancellationToken ct)
+        {
+            if (_last is { } last)
+            {
+                if (DateTimeOffset.UtcNow - last.At >= freshFor && Interlocked.Exchange(ref _refreshing, 1) == 0)
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+                            await BuildAsync(timeout.Token);
+                        }
+                        catch (Exception e)
+                        {
+                            logger.LogWarning(e, "Could not refresh the {Part} statistics", name);
+                        }
+                        finally
+                        {
+                            Volatile.Write(ref _refreshing, 0);
+                        }
+                    }, CancellationToken.None);
+                return last.Value;
+            }
+            await _gate.WaitAsync(ct);
+            try
+            {
+                if (_last is { } now) return now.Value;
+                return await BuildLockedAsync(ct);
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
+        private async Task BuildAsync(CancellationToken ct)
+        {
+            await _gate.WaitAsync(ct);
+            try
+            {
+                await BuildLockedAsync(ct);
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
+        private async Task<object> BuildLockedAsync(CancellationToken ct)
+        {
+            var watch = Stopwatch.StartNew();
+            var value = await build(ct);
+            LastMs = watch.ElapsedMilliseconds;
+            _last = (DateTimeOffset.UtcNow, value);
+            return value;
+        }
     }
 
+#pragma warning disable IDE1006 // column names
     private sealed class RangePersonRow
     {
         public Guid member_id { get; init; }
