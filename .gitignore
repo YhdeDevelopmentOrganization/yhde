@@ -23,6 +23,9 @@ client/godot/addons/yhde/bin/
 deploy/.env
 deploy/backups/
 deploy/updates/
+# The server's own extra websites and Docker changes (deploy/sites/README.md)
+deploy/sites/*.caddy
+deploy/compose.override.yaml
 
 # Admin and join pages (server/admin-ui): dependencies and build output
 server/admin-ui/node_modules/

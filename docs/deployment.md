@@ -157,6 +157,15 @@ The admin page shows most of it: people online, the server's health, disk
 use, the latest backup and waiting updates. Also worth watching: CPU, and
 `./yhde logs server` for repeated errors or refused sign-ins.
 
+## 10. Other Websites on the Same Server
+
+Caddy also serves any `deploy/sites/*.caddy` files, and Docker Compose reads
+`deploy/compose.override.yaml` for the files or containers they need. Git
+ignores both, so updates never change them and never stop on them. Editing
+`deploy/Caddyfile` or `compose.yaml` on the server instead makes the next
+update that changes them fail with "Could not switch to that version". See
+`deploy/sites/README.md`.
+
 ## See Also
 
 - [setup_your_server.md](setup_your_server.md), [admin.md](admin.md),
