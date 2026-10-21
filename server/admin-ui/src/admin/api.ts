@@ -29,6 +29,8 @@ export type Addon = { version: string; sha256: string; size: number; platforms: 
 export type Overview = {
   version: string
   started: string
+  // The blob store: every stored file once, old versions included.
+  storage: { files: number; bytes: number; maxFileBytes: number }
   projects: Project[]
   online: OnlinePerson[]
   addon: Addon | null
@@ -36,54 +38,42 @@ export type Overview = {
   backups: { configured: boolean; files: { name: string; bytes: number; at: string }[] }
 }
 
-export type Stats = {
+// The statistics come in three parts (AdminStats.cs), so each page asks only
+// for what it shows. Health has no database work and comes with every refresh.
+export type Health = {
+  started: string
+  connections: number
+  editing: number
+  memoryMb: number
+  cpu: number
+  requests: number
+  errors: number
+  slowDisconnects: number
+  runtime: string
+  os: string
+  cores: number
+  disk: { free: number; total: number; minFree: number }
+  statsMs: { activity: number | null; storage: number | null }
+  samples: { at: string; connections: number; editing: number; memoryMb: number; cpu: number; requests: number; errors: number }[]
+}
+
+// Changes made in the editor; imports (a project made from a zip) are counted apart.
+export type Activity = {
   days: number
-  activity: {
-    daily: { day: string; project: string; n: number }[]
-    heat: { dow: number; hour: number; n: number }[]
-    kinds: { type: string; n: number }[]
-    totals: { all: number; today: number; week: number }
-  }
-  people: {
-    list: {
-      id: string
-      name: string
-      sessions: number
-      seconds: number
-      lastSeen: string
-      firstSeen: string
-      version: string
-      online: boolean
-      changes: number
-      chat: number
-      comments: number
-      projects: string[]
-    }[]
-    daily: { day: string; n: number }[]
-  }
-  storage: {
-    stored: { files: number; bytes: number }
-    database: number
-    disk: { free: number; total: number; minFree: number }
-    maxFile: number
-    byProject: { project: string; files: number; bytes: number }[]
-    byKind: { kind: string; files: number; bytes: number }[]
-    biggest: { project: string; path: string; size: number }[]
-  }
-  health: {
-    started: string
-    connections: number
-    editing: number
-    memoryMb: number
-    cpu: number
-    requests: number
-    errors: number
-    slowDisconnects: number
-    runtime: string
-    os: string
-    cores: number
-    samples: { at: string; connections: number; editing: number; memoryMb: number; cpu: number; requests: number; errors: number }[]
-  }
+  daily: { day: string; project: string; n: number }[]
+  heat: { dow: number; hour: number; n: number }[]
+  kinds: { type: string; n: number }[]
+  totals: { all: number; today: number; week: number; importedToday: number; importedWeek: number }
+  people: number
+}
+
+export type Storage = {
+  stored: { files: number; bytes: number }
+  database: number
+  maxFile: number
+  byProject: { project: string; files: number; bytes: number }[]
+  byKind: { kind: string; files: number; bytes: number }[]
+  biggest: { project: string; path: string; size: number }[]
 }
 
 export type Commit = { sha: string; author: string; date: string; subject: string }

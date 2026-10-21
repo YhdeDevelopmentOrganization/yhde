@@ -7,7 +7,14 @@ export function bytes(n: number) {
 
 export const num = (n: number) => Number(n || 0).toLocaleString()
 
-export const plural = (n: number, one: string, many = one + "s") => `${num(n)} ${n === 1 ? one : many}`
+// Short numbers for chart axes: 60000 → 60K, so wide values never get cut off.
+const compactFormat = new Intl.NumberFormat([], { notation: "compact", maximumFractionDigits: 1 })
+export const compact = (n: number) => compactFormat.format(Number(n || 0))
+
+// Times of day the same way on every page: 24-hour clock.
+export const clock = (t: number | string | Date) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+
+export const plural =(n: number, one: string, many = one + "s") => `${num(n)} ${n === 1 ? one : many}`
 
 export function ago(when: string | null | undefined) {
   if (!when) return "never"
@@ -31,7 +38,7 @@ export function duration(seconds: number) {
   return h ? `${h} h ${m} min` : `${m} min`
 }
 
-export const dateTime = (d: string) => new Date(d).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
+export const dateTime = (d: string) => new Date(d).toLocaleString([], { dateStyle: "medium", timeStyle: "short", hourCycle: "h23" })
 export const shortDay = (iso: string) => new Date(iso + "T00:00:00Z").toLocaleDateString([], { day: "numeric", month: "short" })
 export const shortSha = (sha?: string | null) => (sha ?? "").slice(0, 7)
 

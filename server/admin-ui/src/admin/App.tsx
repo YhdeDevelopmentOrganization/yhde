@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { LiveTag, Meter, Wordmark } from "@/world/parts"
-import { api, SignedOut, type Me, type Overview, type Stats, type Updates } from "./api"
+import { api, SignedOut, type Health, type Me, type Overview, type Updates } from "./api"
 import { bytes, duration } from "./format"
 import { OverviewPage } from "./pages/Overview"
 import { ProjectsPage } from "./pages/Projects"
@@ -24,7 +24,9 @@ import { TeamsPage } from "./pages/Teams"
 import { PromosPage } from "./pages/Promos"
 import { AuditPage } from "./pages/Audit"
 
-export type Data = { overview: Overview; stats: Stats; updates: Updates; me: Me }
+// What every page has: small and quick, refreshed every 15 seconds. The
+// heavier statistics are fetched by the pages that show them (usePolled).
+export type Data = { overview: Overview; health: Health; updates: Updates; me: Me }
 
 const TABS = [
   { id: "overview", label: "Overview", icon: Activity },
@@ -58,13 +60,13 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [overview, stats, updates, me] = await Promise.all([
+      const [overview, health, updates, me] = await Promise.all([
         api<Overview>("GET", "/overview"),
-        api<Stats>("GET", "/stats"),
+        api<Health>("GET", "/stats/health"),
         api<Updates>("GET", "/server-update").catch(() => ({ configured: false })),
         api<Me>("GET", "/me"),
       ])
-      setData({ overview, stats, updates, me })
+      setData({ overview, health, updates, me })
       setSignedOut(false)
       setUnreachable(null)
       setLoadedAt(new Date())
@@ -107,8 +109,8 @@ export default function App() {
 
   const waiting = data.updates.status?.available.length ?? 0
   const badge: Partial<Record<Tab, number>> = { server: waiting, "add-on": data.overview.addonPending ? 1 : 0 }
-  const disk = data.stats.storage.disk
-  const h = data.stats.health
+  const h = data.health
+  const disk = h.disk
 
   return (
     <TooltipProvider>
