@@ -6,7 +6,7 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } f
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
 import { api } from "../api"
-import { ago, duration, num } from "../format"
+import { ago, clock, compact, duration, num } from "../format"
 import { Empty, Section } from "../parts"
 import { Peer } from "@/world/parts"
 
@@ -53,8 +53,8 @@ const METRICS: { id: Metric; label: string; title: string }[] = [
 // A bucket's start as a short label, and in full for the tooltip.
 function tick(at: string, unit: PeopleData["unit"]) {
   const d = new Date(at)
-  if (unit === "5min" || unit === "hour") return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-  if (unit === "6h") return d.toLocaleDateString([], { weekday: "short" }) + " " + d.toLocaleTimeString([], { hour: "2-digit" })
+  if (unit === "5min" || unit === "hour") return clock(d)
+  if (unit === "6h") return d.toLocaleDateString([], { weekday: "short" }) + " " + clock(d)
   if (unit === "month") return d.toLocaleDateString([], { month: "short", year: "2-digit" })
   return d.toLocaleDateString([], { day: "numeric", month: "short" })
 }
@@ -63,7 +63,7 @@ function full(at: string, unit: PeopleData["unit"]) {
   if (unit === "month") return d.toLocaleDateString([], { month: "long", year: "numeric" })
   if (unit === "week") return "Week of " + d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })
   if (unit === "day") return d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })
-  return d.toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+  return d.toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
 }
 
 export function PeoplePage() {
@@ -90,6 +90,9 @@ export function PeoplePage() {
   const shown = data?.range === range ? data : null
   const m = METRICS.find((x) => x.id === metric)!
   const config: ChartConfig = { [metric]: { label: m.label, color: "var(--accent)" } }
+  // Chat and Comments only take room when someone used them.
+  const anyChat = !!shown?.list.some((p) => p.chat)
+  const anyComments = !!shown?.list.some((p) => p.comments)
   const total =
     shown && metric !== "people" ? shown.buckets.reduce((n, b) => n + b[metric], 0) : shown ? shown.list.length : 0
 
@@ -113,9 +116,9 @@ export function PeoplePage() {
             <BarChart data={shown.buckets}>
               <CartesianGrid vertical={false} />
               <XAxis dataKey="at" tickLine={false} axisLine={false} tickMargin={8} minTickGap={24} tickFormatter={(v) => tick(String(v), shown.unit)} />
-              <YAxis tickLine={false} axisLine={false} width={36} allowDecimals={metric === "hours"} />
+              <YAxis tickLine={false} axisLine={false} width={44} allowDecimals={metric === "hours"} tickFormatter={compact} />
               <ChartTooltip content={<ChartTooltipContent labelFormatter={(_, p) => full(String(p?.[0]?.payload?.at ?? ""), shown.unit)} />} />
-              <Bar dataKey={metric} fill={`var(--color-${metric})`} radius={[6, 6, 2, 2]} />
+              <Bar dataKey={metric} fill={`var(--color-${metric})`} radius={[6, 6, 2, 2]} isAnimationActive={false} />
             </BarChart>
           </ChartContainer>
         ) : (
@@ -131,8 +134,8 @@ export function PeoplePage() {
                 <TableHead>Name</TableHead>
                 <TableHead>Projects</TableHead>
                 <TableHead className="text-right">Changes</TableHead>
-                <TableHead className="text-right">Chat</TableHead>
-                <TableHead className="text-right">Comments</TableHead>
+                {anyChat ? <TableHead className="text-right">Chat</TableHead> : null}
+                {anyComments ? <TableHead className="text-right">Comments</TableHead> : null}
                 <TableHead className="text-right">Time online</TableHead>
                 <TableHead>Last seen</TableHead>
                 <TableHead>Add-on</TableHead>
@@ -147,10 +150,12 @@ export function PeoplePage() {
                       {p.kind !== "account" ? <Badge variant="outline">{p.kind === "test" ? "Test" : "Guest"}</Badge> : null}
                     </span>
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{p.projects.join(", ") || "-"}</TableCell>
+                  <TableCell className="text-muted-foreground" title={p.projects.length > 3 ? p.projects.join(", ") : undefined}>
+                    {p.projects.length > 3 ? `${p.projects.slice(0, 3).join(", ")} +${p.projects.length - 3} more` : p.projects.join(", ") || "-"}
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">{num(p.changes)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{num(p.chat)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{num(p.comments)}</TableCell>
+                  {anyChat ? <TableCell className="text-right tabular-nums">{num(p.chat)}</TableCell> : null}
+                  {anyComments ? <TableCell className="text-right tabular-nums">{num(p.comments)}</TableCell> : null}
                   <TableCell className="text-right tabular-nums">{duration(p.seconds)}</TableCell>
                   <TableCell>{p.online ? <Badge variant="secondary">Online</Badge> : <span className="text-muted-foreground">{ago(p.lastSeen)}</span>}</TableCell>
                   <TableCell className="text-muted-foreground">{p.version || "-"}</TableCell>

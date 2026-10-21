@@ -83,15 +83,9 @@ public static class AdminEndpoints
             BlobStore blobs, AddonStore addon, YHDE.Server.Teams.TeamStore teams, IConfiguration config, CancellationToken ct) =>
         {
             var list = await projects.ListAsync(ct);
-            var invites = new Dictionary<Guid, IReadOnlyList<InviteInfo>>();
-            var links = new Dictionary<Guid, IReadOnlyList<LinkInfo>>();
-            var joinCodes = new Dictionary<Guid, string?>();
-            foreach (var p in list)
-            {
-                invites[p.ProjectId] = await projects.ListInvitesAsync(p.ProjectId, ct);
-                links[p.ProjectId] = await projects.ListLinksAsync(p.ProjectId, ct);
-                joinCodes[p.ProjectId] = await teams.JoinCodeAsync(p.ProjectId, ct);
-            }
+            var invites = await projects.ListAllInvitesAsync(ct);
+            var links = await projects.ListAllLinksAsync(ct);
+            var joinCodes = await teams.JoinCodesAsync(ct);
             var stats = (await projects.StatsAsync(ct)).ToDictionary(s => s.ProjectId);
             var names = list.ToDictionary(p => p.ProjectId, p => p.Name);
             var online = sessions.All.Where(s => s.IsSubscribed).Select(s =>
@@ -131,7 +125,7 @@ public static class AdminEndpoints
                     fileBytes = st?.FileBytes ?? 0,
                     lastActivity = st?.LastActivity,
                     online = online.Count(o => o.projectId == p.ProjectId),
-                    joinCode = joinCodes[p.ProjectId],
+                    joinCode = joinCodes.GetValueOrDefault(p.ProjectId),
                     invites = invites[p.ProjectId].Select(i => new
                     {
                         id = i.InviteId, label = i.Label, created = i.CreatedAt, revoked = i.RevokedAt, fromLink = i.LinkId,

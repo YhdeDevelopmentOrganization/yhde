@@ -18,9 +18,10 @@ import { Button } from "@/components/ui/button"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import type { Data } from "../App"
-import { api, type Commit } from "../api"
-import { ago, dateTime, duration, num, shortSha } from "../format"
+import { api, type Activity, type Commit } from "../api"
+import { ago, clock, compact, dateTime, duration, num, shortSha } from "../format"
 import { Empty, Section, Stat } from "../parts"
+import { usePolled } from "../usePolled"
 
 const KIND_NAMES: Record<string, string> = {
   ChangeProperty: "Property changes",
@@ -42,17 +43,19 @@ const KIND_NAMES: Record<string, string> = {
 }
 
 export function ServerPage({ data, refresh }: { data: Data; refresh: () => Promise<void> }) {
-  const h = data.stats.health
+  const h = data.health
+  const ms = (v: number | null) => (v == null ? "-" : `${num(v)} ms`)
   return (
     <div className="grid gap-6">
       <UpdatesSection data={data} refresh={refresh} />
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-7">
         <Stat label="Uptime" value={duration((Date.now() - new Date(h.started).getTime()) / 1000)} />
         <Stat label="Connections" value={h.connections} />
         <Stat label="CPU" value={`${h.cpu}%`} hint={`${h.cores} cores`} />
         <Stat label="Memory" value={`${Math.round(h.memoryMb)} MB`} />
         <Stat label="Server errors" value={num(h.errors)} hint={`of ${num(h.requests)} requests`} />
         <Stat label="Slow editors cut off" value={num(h.slowDisconnects ?? 0)} hint="since the server started" />
+        <Stat label="Statistics" value={ms(h.statsMs.activity)} hint={`database time; storage ${ms(h.statsMs.storage)}`} />
       </div>
       <div className="grid gap-6 lg:grid-cols-2">
         <TimeChart title="Connections" data={data} field="connections" color="var(--accent)" />
@@ -60,7 +63,7 @@ export function ServerPage({ data, refresh }: { data: Data; refresh: () => Promi
         <TimeChart title="Memory" data={data} field="memoryMb" color="var(--accent)" unit=" MB" />
         <TimeChart title="Requests" data={data} field="requests" color="var(--accent)" description="Per minute" />
       </div>
-      <KindsChart data={data} />
+      <KindsChart />
     </div>
   )
 }
@@ -205,9 +208,9 @@ function UpdatesSection({ data, refresh }: { data: Data; refresh: () => Promise<
 type Field = "connections" | "cpu" | "memoryMb" | "requests"
 
 function TimeChart({ title, description, data, field, color, unit = "" }: { title: string; description?: string; data: Data; field: Field; color: string; unit?: string }) {
-  const rows = data.stats.health.samples.map((s) => ({ t: new Date(s.at).getTime(), v: s[field] }))
+  const rows = data.health.samples.map((s) => ({ t: new Date(s.at).getTime(), v: s[field] }))
   const config: ChartConfig = { v: { label: title, color } }
-  const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+  const time = (t: number) => clock(t)
   return (
     <Section title={title} description={description ?? "Last 24 hours"}>
       {rows.length > 1 ? (
@@ -215,7 +218,7 @@ function TimeChart({ title, description, data, field, color, unit = "" }: { titl
           <AreaChart data={rows}>
             <CartesianGrid vertical={false} />
             <XAxis dataKey="t" type="number" scale="time" domain={["dataMin", "dataMax"]} tickLine={false} axisLine={false} tickMargin={8} minTickGap={40} tickFormatter={time} />
-            <YAxis tickLine={false} axisLine={false} width={48} allowDecimals={field === "cpu"} tickFormatter={(v) => `${v}${unit}`} />
+            <YAxis tickLine={false} axisLine={false} width={unit.length > 1 ? 64 : 48} allowDecimals={field === "cpu"} tickFormatter={(v) => `${v}${unit}`} />
             <ChartTooltip
               content={
                 <ChartTooltipContent
@@ -239,8 +242,10 @@ function TimeChart({ title, description, data, field, color, unit = "" }: { titl
   )
 }
 
-function KindsChart({ data }: { data: Data }) {
-  const rows = data.stats.activity.kinds.map((k) => ({ name: KIND_NAMES[k.type] ?? k.type, n: k.n }))
+function KindsChart() {
+  const activity = usePolled<Activity>("/stats/activity", 60000)
+  if (!activity) return null
+  const rows = activity.kinds.map((k) => ({ name: KIND_NAMES[k.type] ?? k.type, n: k.n }))
   const config: ChartConfig = { n: { label: "Changes", color: "var(--accent)" } }
   return (
     <Section title="Kinds of changes" description="Last 30 days">
@@ -248,10 +253,10 @@ function KindsChart({ data }: { data: Data }) {
         <ChartContainer config={config} className="w-full" style={{ height: Math.max(120, rows.length * 32 + 24) }}>
           <BarChart data={rows} layout="vertical" margin={{ left: 8, right: 16 }}>
             <CartesianGrid horizontal={false} />
-            <XAxis type="number" tickLine={false} axisLine={false} allowDecimals={false} />
+            <XAxis type="number" tickLine={false} axisLine={false} allowDecimals={false} tickFormatter={compact} />
             <YAxis type="category" dataKey="name" tickLine={false} axisLine={false} width={140} />
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Bar dataKey="n" fill="var(--color-n)" radius={[2, 6, 6, 2]} />
+            <Bar dataKey="n" fill="var(--color-n)" radius={[2, 6, 6, 2]} isAnimationActive={false} />
           </BarChart>
         </ChartContainer>
       ) : (

@@ -14,9 +14,14 @@ export function mockAdmin(): Plugin {
       links: [{ id: "l1", label: "Maya", created: iso(58 * D), expires: iso(-5 * D), maxUses: 5, uses: 1, revoked: null }, { id: "l2", label: "Old jam link", created: iso(90 * D), expires: iso(80 * D), maxUses: null, uses: 3, revoked: null }] },
     { id: "22222222-2222-2222-2222-222222222222", name: "Dungeon Tide", created: iso(35 * D), archived: null, operations: 12877, files: 612, fileBytes: 1.4e9, lastActivity: iso(26 * H), online: 0, invites: [], links: [] },
     { id: "33333333-3333-3333-3333-333333333333", name: "Jam: Tiny Tides", created: iso(120 * D), archived: iso(80 * D), operations: 5304, files: 214, fileBytes: 3.1e8, lastActivity: iso(90 * D), online: 0, invites: [], links: [] },
+    // Many small projects, some with the same name, like a busy beta server.
+    ...Array.from({ length: 28 }, (_, i) => ({
+      id: `44444444-4444-4444-4444-${String(i).padStart(12, "0")}`, name: i < 3 ? "Elorat" : `v0.${i}`, created: iso((30 - i) * D), archived: null,
+      operations: 900 + i * 37, files: 40 + i, fileBytes: 2e7 + i * 3e6, lastActivity: iso(i * H), online: 0, joinCode: null, invites: [], links: [],
+    })),
   ]
   const overview = {
-    version: "0.3.0", started: iso(3 * D), projects,
+    version: "0.3.0", started: iso(3 * D), storage: { files: 2110, bytes: 4.8e9, maxFileBytes: 2 * 1024 ** 3 }, projects,
     online: [
       { name: "Maya", project: "Skyward", projectId: projects[0].id, scene: "res://levels/level_03.tscn", tool: "", version: "0.3.0", via: "" },
       { name: "Alex", project: "Skyward", projectId: projects[0].id, scene: "res://scripts/player.gd", tool: "", version: "0.3.0", via: "" },
@@ -31,6 +36,7 @@ export function mockAdmin(): Plugin {
     const f = wk === 0 || wk === 6 ? 0.4 : 1
     daily.push({ day: day(i), project: projects[0].id, n: Math.round(f * (300 + 200 * Math.sin(i))) })
     if (i % 3) daily.push({ day: day(i), project: projects[1].id, n: Math.round(f * (90 + 60 * Math.cos(i))) })
+    for (let k = 3; k < projects.length; k += 1) if ((i + k) % 4 === 0) daily.push({ day: day(i), project: projects[k].id, n: 12 * k + (i === 0 && k === 5 ? 4500 : 0) })
   }
   const heat = [] as { dow: number; hour: number; n: number }[]
   for (let h = 0; h < 24; h++) heat.push({ dow: 1, hour: h, n: Math.round(Math.max(0, Math.sin(((h - 6) / 24) * Math.PI * 2)) * 900 + (h > 17 ? 400 : 0)) })
@@ -42,17 +48,21 @@ export function mockAdmin(): Plugin {
     at: iso((240 - i) * 6 * 60000), connections: Math.round(2 + 2 * Math.sin(i / 20) + (i > 200 ? 1 : 0)), editing: 2,
     memoryMb: 180 + i * 0.1 + 8 * Math.sin(i / 9), cpu: Math.round((3 + 2 * Math.sin(i / 7)) * 10) / 10, requests: Math.round(40 + 20 * Math.sin(i / 11)), errors: 0,
   }))
-  const stats = {
-    days: 30,
-    activity: { daily, heat, kinds: [["ChangeProperty", 21000], ["EditText", 9000], ["CreateNode", 3100], ["MoveNode", 1400], ["RegisterAsset", 1300], ["DeleteNode", 700], ["RenameNode", 420]].map(([type, n]) => ({ type, n })), totals: { all: 66391, today: 412, week: 3310 } },
-    people: { list: people, daily: Array.from({ length: 30 }, (_, i) => ({ day: day(29 - i), n: 2 + (i % 3) })) },
-    storage: {
-      stored: { files: 2110, bytes: 4.8e9 }, database: 3.1e8, disk: { free: 1.6e10, total: 4e10 }, maxFile: 5.4e8,
-      byProject: projects.map((p) => ({ project: p.id, files: p.files, bytes: p.fileBytes })),
-      byKind: [["Images", 2.1e9, 900], ["Audio", 1.3e9, 210], ["3D models", 8e8, 120], ["Scenes", 2e8, 480], ["Scripts", 4e7, 400]].map(([kind, bytes, files]) => ({ kind, bytes, files })),
-      biggest: [["res://audio/theme_full.ogg", 8.8e7], ["res://art/parallax_4k.png", 6.1e7], ["res://models/boss.glb", 4.2e7]].map(([path, size]) => ({ project: projects[0].id, path, size })),
-    },
-    health: { started: iso(3 * D), connections: 3, editing: 2, memoryMb: 204, cpu: 4.2, requests: 51230, errors: 2, runtime: ".NET 10", os: "Linux", cores: 2, samples },
+  // AdminStats.cs: health with every refresh, activity and storage per page.
+  const activity = {
+    days: 30, daily, heat, people: 4,
+    kinds: [["ChangeProperty", 21000], ["EditText", 9000], ["CreateNode", 3100], ["MoveNode", 1400], ["RegisterAsset", 1300], ["DeleteNode", 700], ["RenameNode", 420]].map(([type, n]) => ({ type, n })),
+    totals: { all: 66391, today: 412, week: 3310, importedToday: 38841, importedWeek: 38841 },
+  }
+  const storage = {
+    stored: { files: 2110, bytes: 4.8e9 }, database: 3.1e8, maxFile: 5.4e8,
+    byProject: projects.map((p) => ({ project: p.id, files: p.files, bytes: p.fileBytes })),
+    byKind: [["Images", 2.1e9, 900], ["Audio", 1.3e9, 210], ["3D models", 8e8, 120], ["Scenes", 2e8, 480], ["Scripts", 4e7, 400]].map(([kind, bytes, files]) => ({ kind, bytes, files })),
+    biggest: [["res://audio/theme_full.ogg", 8.8e7], ["res://art/parallax_4k.png", 6.1e7], ["res://models/boss.glb", 4.2e7]].map(([path, size]) => ({ project: projects[0].id, path, size })),
+  }
+  const health = {
+    started: iso(3 * D), connections: 3, editing: 2, memoryMb: 204, cpu: 4.2, requests: 51230, errors: 2, slowDisconnects: 1, runtime: ".NET 10", os: "Linux", cores: 2,
+    disk: { free: 1.6e10, total: 4e10, minFree: 2e9 }, statsMs: { activity: 14, storage: 61 }, samples,
   }
   const updates = {
     configured: true, requested: null, checkRequested: false,
@@ -94,7 +104,7 @@ export function mockAdmin(): Plugin {
     presence: [{ sessionId: "s1", name: "Maya", projectId: "p-sky", scene: "res://levels/level_03.tscn", since: iso(40 * 60000) }],
     teamsNeedCode: true,
   })
-  const routes: Record<string, unknown> = { "/overview": overview, "/stats": stats, "/server-update": updates, "/addon": { current: overview.addon, pending: overview.addonPending } }
+  const routes: Record<string, unknown> = { "/overview": overview, "/stats/health": health, "/stats/activity": activity, "/stats/storage": storage, "/server-update": updates, "/addon": { current: overview.addon, pending: overview.addonPending } }
   return {
     name: "yhde-mock-admin",
     apply: "serve",

@@ -56,6 +56,9 @@ public interface IProjectStore
     // Returns the new invite and the code itself (shown once, never stored).
     Task<(InviteInfo Invite, string Code)> CreateInviteAsync(Guid projectId, string label, CancellationToken ct, Guid? linkId = null);
     Task<IReadOnlyList<InviteInfo>> ListInvitesAsync(Guid projectId, CancellationToken ct);
+    // Every project's invite codes and download links, one query each (the admin Overview).
+    Task<ILookup<Guid, InviteInfo>> ListAllInvitesAsync(CancellationToken ct);
+    Task<ILookup<Guid, LinkInfo>> ListAllLinksAsync(CancellationToken ct);
     Task RevokeInviteAsync(Guid inviteId, CancellationToken ct);
     // The project a live code opens (not revoked, project not archived).
     Task<Guid?> ProjectForCodeAsync(string code, CancellationToken ct);
@@ -251,6 +254,30 @@ public sealed class ProjectStore(Database db) : IProjectStore
         return rows.Select(r => r.ToModel()).ToList();
     }
 
+    public async Task<ILookup<Guid, LinkInfo>> ListAllLinksAsync(CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<LinkRow>(new CommandDefinition(
+            """
+            SELECT link_id, project_id, label, created_at, expires_at, max_uses, uses, revoked_at
+            FROM download_links ORDER BY created_at
+            """,
+            cancellationToken: ct));
+        return rows.Select(r => r.ToModel()).ToLookup(l => l.ProjectId);
+    }
+
+    public async Task<ILookup<Guid, InviteInfo>> ListAllInvitesAsync(CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<InviteRow>(new CommandDefinition(
+            """
+            SELECT invite_id, project_id, label, created_at, revoked_at, link_id
+            FROM project_invites ORDER BY created_at
+            """,
+            cancellationToken: ct));
+        return rows.Select(r => r.ToModel()).ToLookup(i => i.ProjectId);
+    }
+
     public async Task<bool> DeleteLinkAsync(Guid linkId, CancellationToken ct)
     {
         await using var conn = await db.OpenAsync(ct);
@@ -385,24 +412,19 @@ public sealed class ProjectStore(Database db) : IProjectStore
     {
         await using var conn = await db.OpenAsync(ct);
         // Files: per path, the latest asset operation, unless it is a delete.
+        // Both come from the summaries kept as operations are added (018).
         var rows = await conn.QueryAsync<StatsRow>(new CommandDefinition(
             """
-            WITH ops AS (
-                SELECT b.project_id, o.seq, o.branch_id, o.type, o.target_id, o.payload, o.created_at
-                FROM operations o JOIN branches b ON b.branch_id = o.branch_id
-            ),
-            latest AS (
-                SELECT DISTINCT ON (branch_id, target_id) project_id, type, payload
-                FROM ops WHERE type IN ('RegisterAsset', 'UpdateAsset', 'MoveAsset', 'DeleteAsset')
-                ORDER BY branch_id, target_id, seq DESC
-            )
             SELECT p.project_id,
-                   (SELECT COUNT(*) FROM ops WHERE ops.project_id = p.project_id) AS operations,
-                   (SELECT COUNT(*) FROM latest l WHERE l.project_id = p.project_id AND l.type <> 'DeleteAsset') AS files,
-                   (SELECT COALESCE(SUM((l.payload->>'n')::BIGINT), 0) FROM latest l
-                      WHERE l.project_id = p.project_id AND l.type <> 'DeleteAsset') AS file_bytes,
-                   (SELECT MAX(created_at) FROM ops WHERE ops.project_id = p.project_id) AS last_activity
+                   COALESCE(c.operations, 0) AS operations,
+                   COALESCE(f.files, 0) AS files,
+                   COALESCE(f.file_bytes, 0) AS file_bytes,
+                   c.last_activity
             FROM projects p
+            LEFT JOIN (SELECT project_id, SUM(n)::bigint AS operations, MAX(last_at) AS last_activity
+                       FROM op_hourly GROUP BY project_id) c ON c.project_id = p.project_id
+            LEFT JOIN (SELECT project_id, COUNT(*) AS files, SUM(size)::bigint AS file_bytes
+                       FROM asset_heads WHERE type <> 'DeleteAsset' GROUP BY project_id) f ON f.project_id = p.project_id
             """,
             cancellationToken: ct));
         return rows.Select(r => new ProjectStats(r.project_id, r.operations, r.files, r.file_bytes,

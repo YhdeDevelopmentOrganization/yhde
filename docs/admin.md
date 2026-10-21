@@ -102,7 +102,8 @@ All under `/admin/api`, JSON. The main routes:
 |---|---|
 | `POST /login`, `POST /login/account`, `GET /login/site`, `POST /logout` | Sign in with the server password, an account, or the website session; sign out. |
 | `GET /me` | Who is signed in and their role. |
-| `GET /overview`, `GET /stats` | The Overview and chart data (stats cached 30 s). |
+| `GET /overview` | Projects, who is online, the add-on and backups. |
+| `GET /stats/health`, `GET /stats/activity`, `GET /stats/storage` | Chart data in three parts: the server process and disk (no database), changes and people (30 s), file sizes (5 min). Out-of-date parts answer at once and rebuild in the background ([ADR 0017](adr/0017-statistics-from-summaries.md)). |
 | `POST /projects`, `POST /projects/{id}`, `POST /projects/import?name=`, `POST /projects/{id}/delete`, `POST /projects/{id}/team` | Make, rename, archive, import, delete, move a project. |
 | `GET/POST /projects/{id}/invites`, `POST /invites/{id}/revoke`, `POST /invites/{id}/delete` | Invite codes. |
 | `POST /projects/{id}/links`, `POST /links/{id}/revoke`, `POST /links/{id}/delete` | Download links. |

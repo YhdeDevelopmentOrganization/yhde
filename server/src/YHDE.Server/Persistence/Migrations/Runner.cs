@@ -43,6 +43,9 @@ public static class Runner
                 typeof(Runner).Assembly,
                 s => s.StartsWith("YHDE.Server.Persistence.Migrations.") && s.EndsWith(".sql"))
             .WithTransactionPerScript()
+            // Some scripts fill new tables from the whole operation log once
+            // (018); on a small server that can take longer than DbUp's 30 s.
+            .WithExecutionTimeout(TimeSpan.FromMinutes(30))
             .LogTo(new DbUpLogger(logger))
             .Build();
 

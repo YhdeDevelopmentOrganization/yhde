@@ -75,11 +75,16 @@ export function TeamsPage({ me }: { me: Me }) {
     return () => clearTimeout(t)
   }, [q, load])
 
+  // When every owner has the same plan, say it once instead of on every row.
+  const planText = (t: NonNullable<typeof rows>[number]) =>
+    `${planById(t.plan)?.name ?? t.plan}${t.bonusSeats || t.bonusStorageGb ? ", with a code" : ""}${t.freeSeats ? `, +${t.freeSeats} free seats` : ""}`
+  const samePlan = rows && rows.length > 1 && rows.every((t) => planText(t) === planText(rows[0])) ? planText(rows[0]) : null
+
   return (
     <div className="grid gap-6">
       <Section
         title="People who make projects"
-        description={rows ? `${rows.length} with an access code. Nothing is charged during the beta.` : "Loading…"}
+        description={rows ? `${rows.length} with an access code${samePlan ? `, all on ${samePlan}` : ""}. Nothing is charged during the beta.` : "Loading…"}
         action={
           <div className="relative w-64 max-w-full">
             <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-dim" aria-hidden="true" />
@@ -94,7 +99,7 @@ export function TeamsPage({ me }: { me: Me }) {
             <TableHeader>
               <TableRow>
                 <TableHead>Owner</TableHead>
-                <TableHead>Plan</TableHead>
+                {samePlan ? null : <TableHead>Plan</TableHead>}
                 <TableHead className="text-right">Projects</TableHead>
                 <TableHead className="text-right">People in them</TableHead>
                 <TableHead>Since</TableHead>
@@ -107,11 +112,11 @@ export function TeamsPage({ me }: { me: Me }) {
                     {t.owner}
                     <span className="block text-xs font-normal text-muted-foreground">{t.ownerEmail}</span>
                   </TableCell>
-                  <TableCell>
+                  {samePlan ? null : <TableCell>
                     {planById(t.plan)?.name ?? t.plan}
                     {t.bonusSeats || t.bonusStorageGb ? <Badge variant="secondary" className="ml-2">Code</Badge> : null}
                     {t.freeSeats ? <Badge variant="secondary" className="ml-2">+{t.freeSeats} free</Badge> : null}
-                  </TableCell>
+                  </TableCell>}
                   <TableCell className="text-right tabular-nums">{t.projects}</TableCell>
                   <TableCell className="text-right tabular-nums">
                     {t.members}
