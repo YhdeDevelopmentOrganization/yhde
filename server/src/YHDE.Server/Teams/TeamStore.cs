@@ -505,27 +505,17 @@ public sealed class TeamStore(Database db)
 
     // Size and change counts of the team's projects. Files: per path, the
     // latest asset operation, unless it is a delete (as ProjectStore.StatsAsync).
+    // Read from the summaries kept as operations are added (018).
     public async Task<IReadOnlyList<TeamProjectStats>> StatsAsync(IReadOnlyList<Guid> projectIds, CancellationToken ct)
     {
         if (projectIds.Count == 0) return [];
         await using var conn = await db.OpenAsync(ct);
         var rows = await conn.QueryAsync<StatsRow>(new CommandDefinition(
             """
-            WITH ops AS (
-                SELECT b.project_id, o.seq, o.branch_id, o.type, o.target_id, o.payload
-                FROM operations o JOIN branches b ON b.branch_id = o.branch_id
-                WHERE b.project_id = ANY(@ids)
-            ),
-            latest AS (
-                SELECT DISTINCT ON (branch_id, target_id) project_id, type, payload
-                FROM ops WHERE type IN ('RegisterAsset', 'UpdateAsset', 'MoveAsset', 'DeleteAsset')
-                ORDER BY branch_id, target_id, seq DESC
-            )
             SELECT p.project_id,
-                   (SELECT COUNT(*) FROM ops WHERE ops.project_id = p.project_id) AS operations,
-                   (SELECT COUNT(*) FROM latest l WHERE l.project_id = p.project_id AND l.type <> 'DeleteAsset') AS files,
-                   (SELECT COALESCE(SUM((l.payload->>'n')::BIGINT), 0) FROM latest l
-                      WHERE l.project_id = p.project_id AND l.type <> 'DeleteAsset') AS file_bytes
+                   COALESCE((SELECT SUM(n) FROM op_hourly h WHERE h.project_id = p.project_id), 0)::bigint AS operations,
+                   (SELECT COUNT(*) FROM asset_heads a WHERE a.project_id = p.project_id AND a.type <> 'DeleteAsset') AS files,
+                   COALESCE((SELECT SUM(size) FROM asset_heads a WHERE a.project_id = p.project_id AND a.type <> 'DeleteAsset'), 0)::bigint AS file_bytes
             FROM projects p WHERE p.project_id = ANY(@ids)
             """, new { ids = projectIds.ToArray() }, cancellationToken: ct));
         return rows.Select(r => new TeamProjectStats(r.project_id, r.operations, r.files, r.file_bytes)).ToList();
@@ -538,9 +528,9 @@ public sealed class TeamStore(Database db)
         await using var conn = await db.OpenAsync(ct);
         var rows = await conn.QueryAsync<DailyRow>(new CommandDefinition(
             """
-            SELECT b.project_id, (o.created_at AT TIME ZONE 'UTC')::date AS day, COUNT(*) AS count
-            FROM operations o JOIN branches b ON b.branch_id = o.branch_id
-            WHERE b.project_id = ANY(@ids) AND o.created_at >= (NOW() AT TIME ZONE 'UTC')::date - @back
+            SELECT project_id, (hour AT TIME ZONE 'UTC')::date AS day, SUM(n)::bigint AS count
+            FROM op_hourly
+            WHERE project_id = ANY(@ids) AND hour >= (NOW() AT TIME ZONE 'UTC')::date - @back
             GROUP BY 1, 2
             """, new { ids = projectIds.ToArray(), back = days - 1 }, cancellationToken: ct));
         return rows.Select(r => new DailyCount(r.project_id, r.day, r.count)).ToList();
