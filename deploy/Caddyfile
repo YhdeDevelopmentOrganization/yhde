@@ -13,6 +13,10 @@
 		# Don't advertise the web server.
 		-Server
 	}
+	# Pages, scripts and JSON go out compressed (the admin script shrinks
+	# from about 470 KB to 140 KB). Game files and WebSockets are untouched:
+	# Caddy only compresses text types.
+	encode zstd gzip
 	reverse_proxy server:8080
 }
 

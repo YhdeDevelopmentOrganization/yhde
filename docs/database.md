@@ -24,6 +24,7 @@ when the server starts.
 | Accounts | `users`, `user_sessions`, `oauth_links`, `email_tokens` | 007 |
 | Teams | `teams`, `team_members`, `team_invites`, `project_access` | 008, 010 |
 | Promo codes | `promo_codes`, `promo_redemptions` | 009, 011 |
+| Statistics | `asset_heads`, `op_hourly`: summaries of the log kept by a trigger on `operations` ([ADR 0017](adr/0017-statistics-from-summaries.md)) | 018 |
 
 ## 3. The Operation Log
 

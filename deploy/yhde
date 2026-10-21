@@ -150,6 +150,13 @@ backups_dir() {
 	chmod 750 "$DIR/backups"
 }
 
+# Caddy reads the Caddyfile when it starts, and a new version of the file
+# (git replaces it) is not seen through the running container's mount, so
+# a version that changes it restarts Caddy. $1: the commit before.
+restart_caddy_if_changed() {
+	git -C "$DIR/.." diff --quiet "$1" HEAD -- deploy/Caddyfile 2> /dev/null || compose restart caddy
+}
+
 # Updates approved on the admin page (deployment.md). The server writes
 # updates/request (a commit id); this timer, on the host, does the rest. The
 # server itself never gets access to Docker.
@@ -269,6 +276,7 @@ cmd_updater_tick() {
 	site_settings "$(env_get DOMAIN)"
 	backups_dir
 	if compose up -d --build --remove-orphans >> "$U/update.log" 2>&1 && wait_healthy "$(env_get DOMAIN)" >> "$U/update.log" 2>&1; then
+		restart_caddy_if_changed "$from" >> "$U/update.log" 2>&1 || true
 		docker image prune -f > /dev/null 2>&1 || true
 		finish 1 "Updated."
 		return 0
@@ -283,6 +291,7 @@ cmd_updater_tick() {
 cmd_update() {
 	need_root
 	bold "Updating"
+	local from; from=$(git -C "$DIR/.." rev-parse HEAD)
 	git -C "$DIR/.." pull --ff-only
 	# Settings that newer versions need on servers installed before them.
 	[[ -n "$(env_get ADMIN_PASSWORD)" ]] || env_set ADMIN_PASSWORD "$(random_hex 16)"
@@ -290,6 +299,7 @@ cmd_update() {
 	backups_dir
 	install_updater
 	compose up -d --build --remove-orphans
+	restart_caddy_if_changed "$from"
 	docker image prune -f > /dev/null
 	wait_healthy "$(env_get DOMAIN)" || die "The server did not come back; see ./yhde logs server"
 }

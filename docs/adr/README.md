@@ -25,5 +25,6 @@ that replaces the old one.
 | [0014](0014-updates-approved-on-the-admin-page.md) | Updates only when approved on the admin page | Built |
 | [0015](0015-accounts-and-sign-in.md) | Accounts on the website, Godot signs in through it | Built |
 | [0016](0016-people-belong-to-projects.md) | People belong to projects, not teams | Built |
+| [0017](0017-statistics-from-summaries.md) | Statistics read summaries, not the log | Built |
 
 Start with 0001, which everything else depends on, then 0002.
