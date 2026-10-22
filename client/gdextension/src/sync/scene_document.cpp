@@ -31,6 +31,24 @@ namespace yhde {
 
 namespace {
 
+// Godot clears the owner of a branch removed from a scene only when the branch
+// leaves the SceneTree. A scene that is not in the tree (a file edited on disk,
+// or an open tab that is not the edited one) keeps it: the removed nodes still
+// claim their unique names (%Name), and a node given the same unique name later
+// is refused the flag ("already claimed"). Let go of the owner the way the tree
+// does: nodes owned from outside the branch lose it, owners inside it stay.
+void release_outside_owners(Node *branch) {
+	if (!branch || branch->is_inside_tree()) return;
+	std::vector<Node *> stack{ branch };
+	while (!stack.empty()) {
+		Node *n = stack.back();
+		stack.pop_back();
+		Node *owner = n->get_owner();
+		if (owner && owner != branch && !branch->is_ancestor_of(owner)) n->set_owner(nullptr);
+		for (int32_t i = 0; i < n->get_child_count(true); i++) stack.push_back(n->get_child(i, true));
+	}
+}
+
 const Variant *find_prop(const PropList &list, const StringName &name, size_t hint) {
 	if (hint < list.size() && list[hint].first == name) return &list[hint].second;
 	for (const auto &p : list) {
@@ -1028,6 +1046,9 @@ bool SyncDocument::apply_change_type(const Uuid &target, const Dictionary &p, Ap
 		release_from_editor(old);
 		result->set_name(old->get_name());
 		old->replace_by(result, true);
+		// The replaced node keeps its unique name otherwise, and the new one,
+		// which takes its name, could not claim it.
+		release_outside_owners(old);
 		result->set_meta(kIdMeta, target.to_string());
 		if (was_root) root_oid_ = result->get_instance_id();
 		node_by_oid_.erase(it->second.oid);
@@ -1783,6 +1804,7 @@ bool SyncDocument::apply(const std::string &type, const Uuid &target, const Dict
 		Node *parent = n->get_parent();
 		forget_subtree(n);
 		if (parent) parent->remove_child(n);
+		release_outside_owners(n);
 		ctx.detached.push_back(n->get_instance_id());
 		ctx.structure_changed = true;
 		ctx.applied++;

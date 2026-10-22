@@ -114,6 +114,10 @@ public:
 	// a server must never be enough to run someone else's code here. Bytes
 	// already in this project (a move, a copy) are never held.
 	godot::Array held_code() const; // [{path, by}]
+	// Every held file, accepted or not, until its bytes are written. Scene
+	// edits that use one wait for it, or they would load without it.
+	godot::PackedStringArray held_code_paths() const;
+	bool code_held(const godot::String &path) const { return held_code_.count(path) > 0; }
 	void accept_code();
 	// "Trust this project": write them like any other file.
 	void set_trust_code(bool on);

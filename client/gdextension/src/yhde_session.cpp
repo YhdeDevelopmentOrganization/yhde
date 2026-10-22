@@ -43,7 +43,7 @@ const char *kDefaultUrl = "ws://127.0.0.1:5000/ws";
 const char *kDefaultProject = "ffffffff-0000-0000-0000-000000000001";
 const char *kDefaultBranch = "ffffffff-0000-0000-0000-000000000002";
 // Keep in step with addons/yhde/plugin.cfg and the server's ServerInfo.Version.
-const char *kAddonVersion = "0.6.6";
+const char *kAddonVersion = "0.6.8";
 constexpr size_t kMaxSocialBody = 64 * 1024;
 
 constexpr double kPresenceInterval = 1.0 / 15.0;
@@ -1019,15 +1019,27 @@ void YhdeSession::process_committed(std::vector<proto::CommittedOp> &ops) {
 	auto is_blocked = [&](const String &path) {
 		return blocked.count(to_std(yhde::AssetSync::key_of(path))) > 0;
 	};
+	// Code held for this person's OK (a teammate's @tool script) is not on
+	// disk yet either: a scene edit that uses it waits for it too, or the node
+	// would be applied without its script and keep it detached after the code
+	// is accepted. Only scene edits wait: a newer version of the held file
+	// itself must still reach the hold.
+	std::unordered_set<std::string> code;
+	PackedStringArray held_code = asset_.held_code_paths();
+	for (int64_t i = 0; i < held_code.size(); i++) code.insert(to_std(yhde::AssetSync::key_of(held_code[i])));
+	auto waits = [&](const String &path) {
+		std::string k = to_std(yhde::AssetSync::key_of(path));
+		return blocked.count(k) > 0 || code.count(k) > 0;
+	};
 	// Whether the JSON names a waiting file: "res://x" or "res://x::sub".
 	auto refers = [&](const std::string &json) {
 		for (size_t at = json.find("\"res://"); at != std::string::npos; at = json.find("\"res://", at + 1)) {
 			size_t end = json.find('"', at + 1);
 			if (end == std::string::npos) break;
 			std::string s = json.substr(at + 1, end - at - 1);
-			if (blocked.count(s)) return true;
 			size_t sub = s.find("::");
-			if (sub != std::string::npos && blocked.count(s.substr(0, sub))) return true;
+			if (sub != std::string::npos) s = s.substr(0, sub);
+			if (blocked.count(s) || code.count(s)) return true;
 		}
 		return false;
 	};
@@ -1075,6 +1087,10 @@ void YhdeSession::process_committed(std::vector<proto::CommittedOp> &ops) {
 			flush();
 			bool already = asset_.stale(r); // re-delivered after a re-sync
 			asset_.apply(r);
+			if (!r.own && r.type != "DeleteAsset" && !already) {
+				// Held as code just now: later edits that use it wait for it.
+				if (asset_.code_held(r.doc)) code.insert(to_std(yhde::AssetSync::key_of(r.doc)));
+			}
 			if (r.own) queue_.take(r.client_op_ref, nullptr);
 			assets_unsettled = true;
 			// A text file with new bytes (or gone): its live text starts over.
@@ -1088,7 +1104,7 @@ void YhdeSession::process_committed(std::vector<proto::CommittedOp> &ops) {
 				text_.file_replaced(r.doc, r.seq);
 			}
 		} else {
-			if (!blocked.empty() && (is_blocked(r.doc) || refers(op.payload_json))) {
+			if ((!blocked.empty() || !code.empty()) && (waits(r.doc) || refers(op.payload_json))) {
 				block(r.doc);
 				held_.push_back(std::move(op));
 				continue;

@@ -13,6 +13,8 @@
 #include <godot_cpp/core/object.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+#include <algorithm>
+
 using namespace godot;
 
 namespace yhde {

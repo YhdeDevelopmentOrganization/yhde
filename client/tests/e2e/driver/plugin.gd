@@ -501,6 +501,24 @@ func phase1_edits() -> void:
 	for n in owned_nodes(root):
 		total += perturb_all(n)
 	await wait(0.5)
+	# A unique name (%Name) that passes to a new node: the old node is deleted and
+	# a new one takes its name. ui.tscn is closed on B, so B applies this to the
+	# file, outside the SceneTree, where Godot keeps the deleted node's claim.
+	var first := add_node(root, Label.new(), "UniqueTitle")
+	set_props(first, {"unique_name_in_owner": true}, "unique first")
+	ur.create_action("delete UniqueTitle")
+	ur.add_do_method(root, "remove_child", first)
+	ur.add_undo_method(root, "add_child", first)
+	ur.add_undo_reference(first)
+	ur.commit_action()
+	expect_structural()
+	var second := add_node(root, Label.new(), "UniqueTitle")
+	set_props(second, {"unique_name_in_owner": true}, "unique second")
+	await wait(0.3)
+	# A theme override set on its own: nothing else changes on the node, and the
+	# engine does not announce the longer property list.
+	set_props(second, {"theme_override_colors/font_color": Color(0.2, 0.8, 0.4)}, "theme override")
+	await wait(0.3)
 	EditorInterface.save_scene_as("res://ui_copy.tscn")
 	await wait(1.0)
 	root = EditorInterface.get_edited_scene_root()
@@ -569,6 +587,13 @@ func phase2_edits() -> void:
 		fail("ui.tscn on B lost its Button")
 	else:
 		set_props(button, {"text": "From B", "custom_minimum_size": Vector2(120, 40)}, "b button")
+	var title := root.get_node_or_null("UniqueTitle")
+	if title == null:
+		fail("ui.tscn on B lost UniqueTitle")
+	elif not title.unique_name_in_owner or root.get_node_or_null("%UniqueTitle") != title:
+		fail("ui.tscn on B: UniqueTitle lost its unique name (still claimed by the deleted node)")
+	if title != null and not title.get_theme_color("font_color").is_equal_approx(Color(0.2, 0.8, 0.4)):
+		fail("ui.tscn on B: UniqueTitle did not get its theme override")
 	root = await open_scene("res://main3d.tscn")
 	set_props(root.get_node("Box"), {"position": Vector3(1, 2, 3)}, "b box")
 	await wait(0.3)
@@ -1069,6 +1094,12 @@ func _process(delta: float) -> void:
 	mark("code1", FileAccess.get_file_as_string("res://plugins/evil/tool_thing.gd.uid"))
 	await wait_marker("b", "code1")
 	await settle()
+	# A scene edit that uses the held @tool script: B must wait for the code,
+	# not apply the node without it (it would stay detached after accepting).
+	root = await open_scene("res://main2d.tscn")
+	var user := add_node(root, Node.new(), "ToolUser")
+	set_props(user, {"script": load("res://plugins/evil/tool_thing.gd")}, "tool script")
+	await settle()
 	# B holding them must never delete or revert them for anyone.
 	for p in CODE_HELD + CODE_PLAIN + [CODE_RENAMED]:
 		if FileAccess.get_file_as_string(p) != CODE_TEXT[p]:
@@ -1136,6 +1167,13 @@ func phase7_files_b() -> void:
 			fail("B: %s differs from A's after accepting" % p)
 	if FileAccess.get_file_as_string("res://plugins/evil/tool_thing.gd.uid") != tool_uid:
 		fail("B: tool_thing.gd got uid %s, A has %s" % [FileAccess.get_file_as_string("res://plugins/evil/tool_thing.gd.uid"), tool_uid])
+	await settle()
+	var scene_root := await open_scene("res://main2d.tscn")
+	var user := scene_root.get_node_or_null("ToolUser") if scene_root else null
+	if user == null:
+		fail("B: ToolUser, which uses the held script, never arrived")
+	elif user.get_script() == null or user.get_script().resource_path != "res://plugins/evil/tool_thing.gd":
+		fail("B: ToolUser lost its held @tool script after accepting (%s)" % user.get_script())
 	mark("code2")
 	log_line("file checks done (B)")
 
