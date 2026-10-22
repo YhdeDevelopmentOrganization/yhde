@@ -501,6 +501,24 @@ func phase1_edits() -> void:
 	for n in owned_nodes(root):
 		total += perturb_all(n)
 	await wait(0.5)
+	# A unique name (%Name) that passes to a new node: the old node is deleted and
+	# a new one takes its name. ui.tscn is closed on B, so B applies this to the
+	# file, outside the SceneTree, where Godot keeps the deleted node's claim.
+	var first := add_node(root, Label.new(), "UniqueTitle")
+	set_props(first, {"unique_name_in_owner": true}, "unique first")
+	ur.create_action("delete UniqueTitle")
+	ur.add_do_method(root, "remove_child", first)
+	ur.add_undo_method(root, "add_child", first)
+	ur.add_undo_reference(first)
+	ur.commit_action()
+	expect_structural()
+	var second := add_node(root, Label.new(), "UniqueTitle")
+	set_props(second, {"unique_name_in_owner": true}, "unique second")
+	await wait(0.3)
+	# A theme override set on its own: nothing else changes on the node, and the
+	# engine does not announce the longer property list.
+	set_props(second, {"theme_override_colors/font_color": Color(0.2, 0.8, 0.4)}, "theme override")
+	await wait(0.3)
 	EditorInterface.save_scene_as("res://ui_copy.tscn")
 	await wait(1.0)
 	root = EditorInterface.get_edited_scene_root()
@@ -569,6 +587,13 @@ func phase2_edits() -> void:
 		fail("ui.tscn on B lost its Button")
 	else:
 		set_props(button, {"text": "From B", "custom_minimum_size": Vector2(120, 40)}, "b button")
+	var title := root.get_node_or_null("UniqueTitle")
+	if title == null:
+		fail("ui.tscn on B lost UniqueTitle")
+	elif not title.unique_name_in_owner or root.get_node_or_null("%UniqueTitle") != title:
+		fail("ui.tscn on B: UniqueTitle lost its unique name (still claimed by the deleted node)")
+	if title != null and title.get_theme_color("font_color") != Color(0.2, 0.8, 0.4):
+		fail("ui.tscn on B: UniqueTitle did not get its theme override")
 	root = await open_scene("res://main3d.tscn")
 	set_props(root.get_node("Box"), {"position": Vector3(1, 2, 3)}, "b box")
 	await wait(0.3)

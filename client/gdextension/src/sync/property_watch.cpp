@@ -34,6 +34,12 @@ void watch_property_list(Object *object) {
 	if (!watched().insert(id).second) return;
 	object->connect("property_list_changed", callable_mp_static(&on_property_list_changed).bind(id));
 	if (Object::cast_to<Resource>(object)) object->connect("changed", callable_mp_static(&on_property_list_changed).bind(id));
+	// A theme override (theme_override_*) is stored only while it is set, but
+	// adding or removing one does not announce a new property list: Controls and
+	// Windows signal it as a theme change. Without this an override added on its
+	// own (a script or tool calling add_theme_*_override) is never sent.
+	static const StringName theme_changed("theme_changed");
+	if (object->has_signal(theme_changed)) object->connect(theme_changed, callable_mp_static(&on_property_list_changed).bind(id));
 }
 
 bool take_property_list_change(uint64_t object_id) {
