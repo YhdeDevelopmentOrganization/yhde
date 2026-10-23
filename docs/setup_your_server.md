@@ -139,13 +139,15 @@ website, plans and legal pages.
 
 ## Step 9: Let people in
 
-During the beta, making a team needs an access code:
+Anyone with an account can make projects (the default). If you turned on
+`TEAMS_NEED_CODE`, owners need an access code first:
 
-1. On the admin page, open **Promo codes** and click **New access code**. Set
-   how many teams it may make, then send the code to the person.
-2. They sign up on the website, make their team with the code, pick a plan
-   and create or import a project.
-3. They install the add-on in Godot (**AssetLib**, **Import...**, the zip),
+1. Only with `TEAMS_NEED_CODE`: on the admin page, open **Promo codes** and
+   click **New access code**. Set how many teams it may make, then send the
+   code to the person.
+2. They sign up on the website (with the code, if needed) and create or
+   import a project.
+3. They install the add-on in Godot (**Asset Store**, **Import...**, the zip),
    enable it and sign in from the YHDE panel.
 4. They invite teammates by email from the dashboard or the panel. Invited
    people need no code.

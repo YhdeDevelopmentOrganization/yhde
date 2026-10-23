@@ -12,6 +12,7 @@ const TOC = [
   { id: "updates", label: "Updating YHDE" },
   { id: "git", label: "YHDE and Git" },
   { id: "troubleshooting", label: "Troubleshooting" },
+  ...(OFFICIAL ? [{ id: "own-server", label: "Run your own server" }] : []),
 ]
 
 export function Docs() {
@@ -20,6 +21,20 @@ export function Docs() {
       <PageTop title="Getting" accent="started" lead="Everything you need to get your team into the same Godot project. It takes a few minutes." />
       <WithToc toc={TOC}>
         <Prose>
+          {OFFICIAL ? (
+            <figure className="mb-12">
+              <video
+                className="aspect-video w-full rounded-2xl bg-card"
+                src="/ui/media/yhde-tutorial.mp4"
+                poster="/ui/media/yhde-tutorial.jpg"
+                controls
+                playsInline
+                preload="metadata"
+                aria-label="Setting up YHDE: making an account and a project, inviting a teammate, installing the add-on in Godot and signing in."
+              />
+              <figcaption className="mt-3 text-sm text-dim">The whole setup, recorded in Godot 4.7 with YHDE 0.6.8. The steps are below too.</figcaption>
+            </figure>
+          ) : null}
           <h2 id="requirements">What you need</h2>
           <ul>
             <li>
@@ -60,11 +75,12 @@ export function Docs() {
           <ol>
             <li>
               Get the YHDE add-on: <a href="/addon/yhde-addon.zip">download it</a> (one file, no need to unzip). In Godot, open a new, empty project,
-              go to the <strong>AssetLib</strong> tab at the top, press <strong>Import…</strong>, pick the file and press <strong>Install</strong>. Then
-              turn YHDE on under Project Settings, Plugins.
+              go to the <strong>Asset Store</strong> tab at the top, press <strong>Import…</strong>, pick the file and press <strong>Install</strong>.
+              Then turn YHDE on under Project, Project Settings, Plugins.
             </li>
             <li>
-              In the <strong>YHDE panel</strong>, press <strong>Sign in with your browser</strong>. Your browser opens: sign in (or make your free
+              Open the <strong>YHDE panel</strong>: it is a tab next to the Inspector, or click YHDE's status at the top right of the editor. Press{" "}
+              <strong>Sign in with your browser</strong>. Your browser opens: sign in (or make your free
               account), check the code matches the one in Godot, and press <strong>Allow</strong>.
             </li>
             <li>Your team's projects show up in the panel. Click one: its files and settings arrive, and you're in.</li>
@@ -135,6 +151,19 @@ export function Docs() {
               with your Godot version, your operating system and what the YHDE panel says. They run this server.
             </p>
           )}
+          {OFFICIAL ? (
+            <>
+              <h2 id="own-server">Run your own server</h2>
+              <p>
+                YHDE is open source. The server and the add-on's native core are under the AGPL-3.0, and the add-on's scripts under MIT. To run a
+                server for your own team, follow the{" "}
+                <a href="https://github.com/YhdeDevelopmentOrganization/yhde/blob/main/docs/setup_your_server.md" rel="noreferrer">
+                  step-by-step setup guide
+                </a>{" "}
+                on GitHub. It takes about 30 minutes on one small server, and no server experience is needed.
+              </p>
+            </>
+          ) : null}
         </Prose>
       </WithToc>
     </>

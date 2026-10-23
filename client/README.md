@@ -44,7 +44,7 @@ The core is editor-only. Exclude `addons/yhde/*` in your export presets.
 
 ## Using It
 
-1. Install the add-on in a project (AssetLib, Import..., the zip) or copy
+1. Install the add-on in a project (Asset Store, Import..., the zip) or copy
    `godot/addons/yhde` with its `bin/` folder into the project, and enable
    YHDE under Project > Project Settings > Plugins.
 2. In the YHDE panel, sign in (the browser opens; press Allow), then pick a

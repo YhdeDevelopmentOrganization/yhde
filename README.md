@@ -88,7 +88,7 @@ Working today:
 - An admin page for accounts, teams, projects, promo codes, storage,
   updates and the audit log.
 
-During the beta, making a team needs an access code. Payments come later.
+During the beta, YHDE is free. Payments come later.
 Next steps are in [docs/roadmap.md](docs/roadmap.md).
 
 ## Documentation
