@@ -169,8 +169,8 @@ export function ProjectPage({ id }: { id: string }) {
               </ul>
             ) : (
               <p className="px-4 py-6 text-xs text-dim">
-                Nobody is in {p.name} right now. Open it in Godot (4.7 or newer)
-                and press Connect in the YHDE panel.
+                Nobody is in {p.name} right now. Open Godot (4.7 or newer), sign
+                in from the YHDE panel and pick {p.name}.
               </p>
             )}
           </Panel>

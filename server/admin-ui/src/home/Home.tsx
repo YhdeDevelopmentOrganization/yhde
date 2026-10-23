@@ -28,9 +28,9 @@ const TEXT = {
   from: (price: string) =>
     PLANS_OPEN
       ? `From ${price} a month for the owner, VAT included. Teammates join free. For Godot 4.7 and newer, on Windows, macOS and Linux.`
-      : "Free during the beta. For Godot 4.7 and newer, on Windows, macOS and Linux.",
+      : "Free during the beta, and open source. For Godot 4.7 and newer, on Windows, macOS and Linux.",
   videoAlt: "YHDE in the Godot editor: teammates editing the same scene live.",
-  videoNote: "Recorded in the Godot editor with YHDE.",
+  videoNote: "Recorded in the Godot editor with YHDE 0.6.8.",
   stepsA: "Up and running in ",
   stepsB: "three steps",
   steps: [
@@ -45,7 +45,7 @@ const TEXT = {
   getB: "get",
   parts: [
     { title: "An add-on for Godot", body: "A YHDE panel inside the Godot editor: sign in, pick a project, see who's in it, follow them and watch the activity. You keep using Godot as usual." },
-    { title: "Our servers", body: "We host your project and pass every change to your team in milliseconds. Backed up daily. Nothing for you to set up." },
+    { title: "Our servers", body: "We host your project in Helsinki, inside the EU, and pass every change to your team in milliseconds. Backed up daily. Nothing for you to set up." },
     { title: "A dashboard for the owner", body: "Make projects, send invite links, see who's online and how much storage you use, and manage your team." },
   ],
   problemTitle: "No more “don't touch the level, I'm in it.”",
@@ -134,7 +134,8 @@ const TEXT = {
     { q: "What if two people change the same thing at the same moment?", a: "Both see the same result right away: the most recent change wins, and nobody ends up with a broken or conflicted file." },
     { q: "What if my internet drops?", a: "Keep working. Your changes are saved on your computer and sent when you reconnect, even if the editor closes in between." },
     { q: "Which Godot version?", a: "Godot 4.7 and newer, on Windows, macOS and Linux." },
-    { q: "Do I need to run a server?", a: "No. We host it. You make a project and invite your teammates." },
+    { q: "Do I need to run a server?", a: "No. We host it in Helsinki, inside the EU. You make a project and invite your teammates. If you'd rather run your own, YHDE is open source: the setup guide is on GitHub." },
+    { q: "Is YHDE open source?", a: "Yes. The server and the add-on's native core are under the AGPL-3.0, and the add-on's scripts under MIT. The code is on GitHub: github.com/YhdeDevelopmentOrganization/yhde." },
     ...(PLANS_OPEN ? [{ q: "Are the prices with VAT?", a: "Yes. Every price on this page includes VAT (Finnish VAT, 25.5 %)." }] : []),
     { q: "Is my project private?", a: "Yes. Connections are encrypted, only people you invite can join, and your project is backed up daily." },
     { q: "Do you train AI on my game?", a: "No, never. Your scenes, scripts, art, files, chat and comments are not used to train AI, by us or by anyone we work with. Your game is yours." },
@@ -216,8 +217,8 @@ function Hero({ t }: { t: T }) {
         <div className="overflow-hidden rounded-[1.75rem] bg-card p-2 shadow-[0_40px_80px_-30px_rgb(0_0_0/0.8)] sm:p-3">
           <video
             className="aspect-video w-full rounded-[1.25rem] bg-bg"
-            src="/ui/media/yhde-promo.mp4"
-            poster="/ui/media/yhde-promo.jpg"
+            src="/ui/media/yhde-promo-0.6.8.mp4"
+            poster="/ui/media/yhde-promo-0.6.8.jpg"
             autoPlay
             muted
             loop

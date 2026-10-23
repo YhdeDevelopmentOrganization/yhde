@@ -6,7 +6,7 @@ decision is [ADR 0013](adr/0013-addon-from-the-server.md).
 ## 1. Installing the Add-on
 
 The usual way: download the add-on zip from the dashboard (Projects, Godot
-add-on) and install it in Godot with AssetLib, Import..., pick the zip,
+add-on) and install it in Godot with Asset Store, Import..., pick the zip,
 Install. There is no need to unzip it. Then enable YHDE under Project >
 Project Settings > Plugins and sign in from the YHDE panel.
 
