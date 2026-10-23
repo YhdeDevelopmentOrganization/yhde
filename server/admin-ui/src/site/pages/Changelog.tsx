@@ -13,6 +13,21 @@ type Release = { version: string; date: string; title: string; groups: Group[] }
 // the admin page come before these and replace a version they share.
 const HISTORY: Release[] = [
   {
+    version: "0.6.8",
+    date: "2026-10-23",
+    title: "Unique names and theme overrides that always arrive",
+    groups: [
+      {
+        tag: "fixed",
+        items: [
+          "Unique names (%Name) no longer go missing for teammates after part of a scene is deleted and rebuilt with the same names. Found and fixed by @tahakuzgun.",
+          "Theme overrides set on their own, for example by a script or tool, now reach teammates. Found and fixed by @tahakuzgun.",
+          "A node that uses a teammate's @tool script gets the script once you accept the code, instead of staying without it. Reported by @tahakuzgun.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.6.6",
     date: "2026-10-11",
     title: "Quiet console",

@@ -1821,7 +1821,10 @@ void AssetSync::release_accepted_code() {
 		dirty_ = true;
 		wrote = true;
 	}
-	if (wrote) finish_batch();
+	if (wrote) {
+		finish_batch();
+		progress_ = true; // scene edits waiting for this code can go on
+	}
 }
 
 Array AssetSync::held_code() const {
@@ -1833,6 +1836,12 @@ Array AssetSync::held_code() const {
 		d["by"] = kv.second.by;
 		out.push_back(d);
 	}
+	return out;
+}
+
+PackedStringArray AssetSync::held_code_paths() const {
+	PackedStringArray out;
+	for (const auto &kv : held_code_) out.push_back(kv.first);
 	return out;
 }
 

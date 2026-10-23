@@ -4,6 +4,24 @@ What changed in each YHDE release. The website's "What's new" page shows the
 same history (`server/admin-ui/src/site/pages/Changelog.tsx`), plus release
 notes published on the admin page.
 
+## v0.6.8 (2026-10-23)
+
+### Godot add-on
+
+- Unique names (`%Name`) no longer go missing for teammates. When part of a
+  scene was deleted and rebuilt with the same names while that scene was
+  closed (or in another tab) on a teammate's editor, the new nodes lost their
+  unique name there, and scripts using `%Name` got `null`. Found and fixed
+  by @tahakuzgun (#5).
+- Theme overrides set on their own (for example by a script or tool calling
+  `add_theme_color_override`) now reach teammates. Found and fixed by
+  @tahakuzgun (#5).
+- A node that uses a teammate's `@tool` script now gets the script once you
+  accept the code. Before, the node arrived without it and stayed that way;
+  now edits that use held code wait until you accept it. Reported by
+  @tahakuzgun (#5).
+- The native core builds with newer GCC versions again.
+
 ## v0.6.6 (2026-10-11)
 
 ### Godot add-on
