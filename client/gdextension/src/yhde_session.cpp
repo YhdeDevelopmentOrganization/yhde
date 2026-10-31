@@ -296,6 +296,11 @@ bool YhdeSession::start(const String &url, const String &project_id, const Strin
 	audit_ = OS::get_singleton()->has_environment("YHDE_AUDIT");
 	debug_ = OS::get_singleton()->has_environment("YHDE_DEBUG");
 	asset_.set_debug(debug_);
+	max_ops_per_frame_ = kMaxOpsPerFrame;
+	if (OS::get_singleton()->has_environment("YHDE_OPS_PER_FRAME")) {
+		max_ops_per_frame_ = size_t(std::max<int64_t>(1, OS::get_singleton()->get_environment("YHDE_OPS_PER_FRAME").to_int()));
+	}
+	ops_per_frame_ = max_ops_per_frame_;
 	audit_log_.clear();
 	engine_.start();
 	connect_editor_signals();
@@ -720,6 +725,7 @@ void YhdeSession::_process(double delta) {
 		process_committed(none);
 	}
 	check_caught_up();
+	if (!syncing_ && next_seq_ > catchup_head_) engine_.set_file_batching(false);
 	engine_.process(t);
 	if (t - last_history_watch_ >= 0.5) {
 		last_history_watch_ = t;
@@ -803,10 +809,12 @@ void YhdeSession::on_closed(const String &reason) {
 }
 
 void YhdeSession::subscribe(bool fresh_connection) {
+	engine_.set_file_batching(false);
 	int64_t from = cache_.resume_seq();
 	next_seq_ = from + 1;
 	buffer_.clear();
 	held_.clear();
+	newest_version_.clear();
 	asset_.clear_incoming();
 	syncing_ = true;
 	// On a new connection nothing sent before arrived for sure: send it all
@@ -875,7 +883,9 @@ void YhdeSession::on_frame(const proto::Frame &frame) {
 				return;
 			}
 			for (proto::CommittedOp &op : s.tail) {
-				if (op.seq >= next_seq_) buffer_[op.seq] = std::move(op);
+				if (op.seq < next_seq_) continue;
+				note_version(op);
+				buffer_[op.seq] = std::move(op);
 			}
 			if (!s.has_more) {
 				syncing_ = false;
@@ -896,7 +906,10 @@ void YhdeSession::on_frame(const proto::Frame &frame) {
 			proto::CommittedOp op;
 			if (!proto::decode(frame.payload, op)) return;
 			head_seq_ = std::max(head_seq_, op.seq);
-			if (op.seq >= next_seq_) buffer_[op.seq] = std::move(op);
+			if (op.seq >= next_seq_) {
+				note_version(op);
+				buffer_[op.seq] = std::move(op);
+			}
 			break;
 		}
 		case proto::MsgType::OpRejected: {
@@ -936,6 +949,11 @@ void YhdeSession::on_frame(const proto::Frame &frame) {
 
 void YhdeSession::drain() {
 	if (buffer_.empty() || join_pending_) return;
+	// Catching up waits for the whole log. A first join's check_join() must see
+	// all of the project's files and ask before anything here is touched, and
+	// knowing what comes later saves writing what it replaces. The pages take
+	// seconds when no frame is held up applying them.
+	if (syncing_) return;
 	// Drop anything we already processed.
 	while (!buffer_.empty() && buffer_.begin()->first < next_seq_) buffer_.erase(buffer_.begin());
 	std::vector<proto::CommittedOp> ready;
@@ -951,11 +969,13 @@ void YhdeSession::drain() {
 	double took = double(Time::get_singleton()->get_ticks_usec()) / 1e6 - started;
 	// Fit the next frame's share to the time budget: halve after a frame that
 	// took too long, grow again while frames stay well inside it.
-	double budget = syncing_ ? kApplyBudgetSync : kApplyBudgetLive;
+	// The last page arrives long before its operations are applied: history
+	// keeps the catch-up budget until it is all in.
+	double budget = syncing_ || next_seq_ <= catchup_head_ ? kApplyBudgetSync : kApplyBudgetLive;
 	if (took > budget && ops_per_frame_ > 8) {
-		ops_per_frame_ = std::max<size_t>(8, ops_per_frame_ / 2);
+		ops_per_frame_ = std::min(max_ops_per_frame_, std::max<size_t>(8, ops_per_frame_ / 2));
 	} else if (took < budget / 4 && count >= ops_per_frame_) {
-		ops_per_frame_ = std::min(kMaxOpsPerFrame, ops_per_frame_ * 2);
+		ops_per_frame_ = std::min(max_ops_per_frame_, ops_per_frame_ * 2);
 	}
 	if (debug_ && took > budget) UtilityFunctions::print("[yhde] applied ", int64_t(count), " ops in ", int64_t(took * 1000), " ms; next frame takes ", int64_t(ops_per_frame_));
 }
@@ -969,6 +989,15 @@ void YhdeSession::resync_after_gap(double now) {
 	resync_not_before_ = now + wait;
 	resyncs_in_a_row_++;
 	subscribe(false);
+}
+
+void YhdeSession::note_version(const proto::CommittedOp &op) {
+	if (!yhde::AssetSync::is_asset_op(op.type)) return;
+	Variant payload;
+	if (!yhde::from_json(from_std(op.payload_json), payload) || payload.get_type() != Variant::DICTIONARY) return;
+	Dictionary d = payload;
+	int64_t &newest = newest_version_[to_std(String(d.get("s", String())))];
+	newest = std::max(newest, op.seq);
 }
 
 bool YhdeSession::parse_committed(const proto::CommittedOp &op, yhde::RemoteOp &r) {
@@ -1046,6 +1075,7 @@ void YhdeSession::process_committed(std::vector<proto::CommittedOp> &ops) {
 
 	std::vector<yhde::RemoteOp> batch;
 	bool catching_up = syncing_ || (!todo.empty() && todo.back().seq <= catchup_head_);
+	engine_.set_file_batching(catching_up);
 	auto flush = [&]() {
 		if (batch.empty()) return;
 		engine_.apply_batch(batch);
@@ -1073,6 +1103,15 @@ void YhdeSession::process_committed(std::vector<proto::CommittedOp> &ops) {
 			continue;
 		}
 		if (yhde::AssetSync::is_asset_op(r.type)) {
+			// Moves and deletions always run: they change more than these bytes.
+			if (catching_up && !r.own && (r.type == "RegisterAsset" || r.type == "UpdateAsset") && !is_blocked(r.doc) && asset_.can_skip_version(r)) {
+				auto newest = newest_version_.find(to_std(r.doc));
+				if (newest != newest_version_.end() && newest->second > r.seq) {
+					asset_.skip_version(r);
+					last = std::max(last, op.seq);
+					continue;
+				}
+			}
 			String from = r.payload.get("f", String());
 			bool hold = is_blocked(r.doc) || (!from.is_empty() && is_blocked(from));
 			// A file waits for the files it needs (a model for its textures).
@@ -1085,6 +1124,8 @@ void YhdeSession::process_committed(std::vector<proto::CommittedOp> &ops) {
 				continue;
 			}
 			flush();
+			engine_.file_will_change(r.doc);
+			if (!from.is_empty()) engine_.file_will_change(from);
 			bool already = asset_.stale(r); // re-delivered after a re-sync
 			asset_.apply(r);
 			if (!r.own && r.type != "DeleteAsset" && !already) {
@@ -1658,6 +1699,7 @@ String YhdeSession::get_status_text() const {
 			return String::utf8("Connecting…");
 		case STATE_SYNCING: {
 			int64_t done = std::max<int64_t>(0, next_seq_ - 1);
+			if (!buffer_.empty()) done = std::max(done, buffer_.rbegin()->first);
 			if (head_seq_ > 0 && done < head_seq_) {
 				return String("Syncing ") + String::num_int64(done) + " / " + String::num_int64(head_seq_);
 			}

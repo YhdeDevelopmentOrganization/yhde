@@ -1,6 +1,7 @@
 #pragma once
 
 #include "assets/asset_worker.h"
+#include "core/state_file.h"
 #include "core/uuid.h"
 #include "sync/scene_document.h"
 #include "sync/sync_engine.h"
@@ -97,6 +98,13 @@ public:
 	// soon as the editor has imported it) or its registration is not sent.
 	// `pending_ref` receives the registering operation to wait for, if any.
 	bool reference_waits(const godot::String &path, Uuid *pending_ref);
+
+	// Catching up, the log already says a newer version of this file follows.
+	// A file on disk can stay as it is until then: writing every old version
+	// over it would only import them all and show old code for a while. A file
+	// not on disk still gets its version, as edits may need it to exist.
+	bool can_skip_version(const RemoteOp &op) const;
+	void skip_version(const RemoteOp &op);
 
 	// Is this file in the log with this editor's copy in sync (its live text
 	// can start from the disk)? `seq` receives the log seq of its bytes.
@@ -214,6 +222,7 @@ private:
 	Hooks hooks_;
 	AssetWorker worker_;
 	godot::String state_file_;
+	StateFile state_;
 	bool dirty_ = false;
 	bool active_ = false;
 	bool caught_up_ = false;

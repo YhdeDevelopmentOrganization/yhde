@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/state_file.h"
+
 #include <godot_cpp/variant/string.hpp>
 
 #include <cstdint>
@@ -43,6 +45,7 @@ private:
 	};
 
 	godot::String path_;
+	StateFile file_;
 	int64_t applied_seq_ = 0;
 	std::map<godot::String, DocSeq> docs_;
 	bool dirty_ = false;
