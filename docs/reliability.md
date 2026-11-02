@@ -92,6 +92,13 @@ seconds later. A power loss can leave the newest ones empty, moved-over copies
 included, so a backup rotated at that pace goes with them. Each record therefore
 keeps a backup replaced at most every 30 seconds, by a copy forced onto the disk
 first. After a crash at most that much history is fetched again.
+A files record restored from that backup can miss files a teammate changed
+just before the crash, which would then look like local changes: local changes
+are looked for only once caught up, against the whole log.
+
+Edits applied but not saved when the editor stopped (an open scene, or one
+held while catching up) count from their saved mark on the next start, so the
+replay applies them again instead of skipping them as applied.
 
 ### Catching Up
 

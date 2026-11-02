@@ -13,6 +13,35 @@ type Release = { version: string; date: string; title: string; groups: Group[] }
 // the admin page come before these and replace a version they share.
 const HISTORY: Release[] = [
   {
+    version: "0.6.9",
+    date: "2026-11-02",
+    title: "Catching up in seconds, even after a power loss",
+    groups: [
+      {
+        tag: "improved",
+        items: [
+          "Catching up on a long history after a power loss or on a first join takes seconds instead of half an hour, and no longer writes every old version of a file. Found and fixed by @tahakuzgun.",
+          "\"Is this the right folder?\" now comes before anything is changed, with the right numbers. Found and fixed by @tahakuzgun.",
+          "Stored files take less disk space on the server: files that compress well are compressed, and downloads stay byte-for-byte the same.",
+          "Catching up no longer gets cut off by live changes, and finishes on slow connections too.",
+          "Saving changes and opening the Project page are faster.",
+        ],
+      },
+      {
+        tag: "fixed",
+        items: [
+          "YHDE's records survive a sudden power loss. Found and fixed by @tahakuzgun.",
+          "A node deleted and rebuilt with the same name keeps its name after catching up. Found and fixed by @tahakuzgun.",
+          "A text edit refused as outdated is no longer sent again forever. Found and fixed by @tahakuzgun.",
+          "Teammates' changes applied but not yet saved when the editor crashed are applied again on the next start.",
+          "Files a teammate changed just before a crash are no longer sent back over their newer versions.",
+          "A node that gets its name late is no longer sent to the team as your rename.",
+          "An editor that joined an empty project and made its first changes offline is no longer asked \"Is this the right folder?\" after a restart.",
+        ],
+      },
+    ],
+  },
+  {
     version: "0.6.8",
     date: "2026-10-23",
     title: "Unique names and theme overrides that always arrive",

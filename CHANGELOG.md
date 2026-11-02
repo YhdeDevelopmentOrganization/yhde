@@ -4,6 +4,56 @@ What changed in each YHDE release. The website's "What's new" page shows the
 same history (`server/admin-ui/src/site/pages/Changelog.tsx`), plus release
 notes published on the admin page.
 
+## v0.6.9 (2026-11-02)
+
+### Godot add-on
+
+- Catching up on a long history after a sudden power loss, or on a first
+  join, takes seconds instead of half an hour (12301 operations: 1137 s
+  before, 10 s now) and no longer damages scenes. Found and fixed by
+  @tahakuzgun (#8):
+  - YHDE's records survive a power loss: each keeps a backup forced onto the
+    disk, so the editor no longer replays the whole history after one.
+  - Nothing is applied until the whole history has arrived, so "Is this the
+    right folder?" comes first, with the right numbers.
+  - A file is no longer written once for every old version of it: a script
+    changed 121 times was written and imported 121 times, and the editor
+    showed old code with errors meanwhile.
+  - A scene that is not open stays loaded while catching up and is saved
+    every few seconds, instead of for every few changes.
+  - A node deleted and rebuilt with the same name keeps that name, so
+    `get_node("Lamp")` no longer returns `null` after catching up.
+  - A text edit refused as outdated starts over from the file, instead of
+    being sent again forever.
+- Teammates' changes applied but not yet saved when the editor crashed are
+  applied again on the next start. Before, they were skipped as already
+  applied, both in open scenes and (with the change above) in closed ones.
+- After YHDE's file record is restored from its backup, files a teammate
+  changed just before the crash are no longer sent back over their newer
+  versions.
+- A node that gets its name late is no longer sent to the team as a rename
+  of yours.
+- A text file with local edits saved on top of the shared version no longer
+  loses them when an edit is refused as outdated.
+- An editor that joined a project while it was empty and made its first
+  changes offline is no longer asked "Is this the right folder?" after a
+  restart, which held its changes back until someone answered.
+
+### Server
+
+- Stored files take less disk space: the hourly clean-up compresses files
+  that shrink by at least 10% (scenes, .blend, .tga, .exr, .psd, .wav and
+  the like). Already compressed files (PNG, JPEG, WebP, Ogg, zip, mp4) are
+  left alone, and editors still download exactly the bytes they uploaded.
+  An older server cannot read compressed files: do not downgrade past 0.6.9.
+- Catching up no longer gets an editor disconnected: it uses at most a
+  quarter of a connection's send queue, so live changes always fit, and its
+  pages are smaller (2 MB) so slow connections finish them in time.
+- Saving changes is cheaper: three indexes on the change log that nothing
+  used are dropped.
+- Faster pages: the Project page's contributors come from the hourly summary,
+  and checking a signed-in session takes one database query instead of three.
+
 ## v0.6.8 (2026-10-23)
 
 ### Godot add-on
