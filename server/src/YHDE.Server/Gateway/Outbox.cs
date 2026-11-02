@@ -14,6 +14,11 @@ public sealed class Outbox(TimeSpan? sendTimeout = null)
     // Bytes queued for one connection before it counts as too slow. A
     // catch-up page is at most a few MiB, so this is many pages.
     public const long MaxQueuedBytes = 64L * 1024 * 1024;
+    // A connection's own replies (catch-up pages above all) wait while this
+    // much is queued, so live changes from teammates always have room. When
+    // catch-up filled the queue to the limit, the next live change cut the
+    // connection off as "too slow" and its catch-up started over.
+    public const long OwnRepliesLimit = MaxQueuedBytes / 4;
     // Cursor updates beyond this many queued messages are dropped: a newer
     // one follows, and only the latest position matters.
     public const int PresenceDropThreshold = 256;
@@ -42,11 +47,12 @@ public sealed class Outbox(TimeSpan? sendTimeout = null)
         return true; // the connection is closing: nothing more to send
     }
 
-    // Queues a reply to this connection's own request, waiting while its queue
-    // is full: a client that does not read slows only itself.
+    // Queues a reply to this connection's own request, waiting while a
+    // quarter of the queue is used: a client that does not read slows only
+    // itself, and broadcasts keep the rest.
     public async Task PostAsync(byte[] wire, CancellationToken ct)
     {
-        while (QueuedBytes > 0 && QueuedBytes + wire.Length > MaxQueuedBytes)
+        while (QueuedBytes > 0 && QueuedBytes + wire.Length > OwnRepliesLimit)
             await Task.Delay(25, ct);
         TryPost(wire);
     }

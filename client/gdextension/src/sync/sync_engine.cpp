@@ -44,6 +44,7 @@ constexpr double kIdleQuiet = 0.25;      // no idle scan right after an action
 constexpr double kAnimatedRebuild = 2.0; // animation track targets are re-read this often
 constexpr double kGraveGrace = 5.0;      // let editor docks drop pointers to deleted nodes
 constexpr double kInstanceRefresh = 0.3; // instances follow their scene after edits settle
+constexpr double kBatchedFileMax = 3.0;  // a scene held while catching up is saved this often
 
 // Properties that hold view or playback state: where a text box or graph is
 // scrolled to, which tab is showing, the frame an animation preview reached.
@@ -151,6 +152,7 @@ void SyncEngine::start() {
 }
 
 void SyncEngine::stop() {
+	set_file_batching(false);
 	sweep_graveyard(now_, true);
 	active_ = false;
 	settle_at_.clear();
@@ -626,6 +628,7 @@ void SyncEngine::sweep_graveyard(double now, bool all) {
 void SyncEngine::process(double now) {
 	if (!active_) return;
 	now_ = now;
+	if (batched_doc_ && now - batched_since_ >= kBatchedFileMax) save_batched_file();
 	if (!graveyard_.empty()) sweep_graveyard(now, false);
 	// Adopt a newly opened/switched scene on the very next frame, before the
 	// user can touch it (its first edit must not end up in the baseline).
@@ -724,6 +727,21 @@ void SyncEngine::refresh_open_scenes(bool announce_new) {
 	Node *edited = ei->get_edited_scene_root();
 	current_path_ = String();
 	current_unsaved_ = edited && edited->get_scene_file_path().is_empty();
+
+	if (batched_doc_) {
+		// Opened while held: what the tab read from disk lacks the held edits.
+		for (int64_t i = 0; i < roots.size(); i++) {
+			Node *root = Object::cast_to<Node>(roots[i]);
+			if (!root || root->get_scene_file_path() != batched_path_) continue;
+			String path = batched_path_;
+			save_batched_file();
+			ei->reload_scene_from_path(path);
+			roots = ei->get_open_scene_roots();
+			edited = ei->get_edited_scene_root();
+			refresh_requested_ = true;
+			break;
+		}
+	}
 
 	std::set<String> open_paths;
 	std::set<uint64_t> open_roots;
@@ -895,6 +913,7 @@ void SyncEngine::apply_batch(std::vector<RemoteOp> &ops) {
 		if (is_scene_path(path)) {
 			apply_scene_ops(path, group);
 		} else if (is_resource_path(path)) {
+			save_batched_file(); // the held scene may use it
 			apply_resource_ops(path, group);
 		} else {
 			if (hooks_.notice) hooks_.notice(String("Ignored change to unsupported file ") + path, 1);
@@ -1001,7 +1020,33 @@ void SyncEngine::apply_scene_ops(const String &path, std::vector<RemoteOp *> &op
 	apply_to_file(path, ops);
 }
 
+void SyncEngine::set_file_batching(bool on) {
+	file_batching_ = on;
+	if (!on) save_batched_file();
+}
+
+void SyncEngine::file_will_change(const String &path) {
+	if (batched_doc_ && path == batched_path_) save_batched_file();
+}
+
+void SyncEngine::save_batched_file() {
+	if (!batched_doc_) return;
+	std::unique_ptr<SyncDocument> doc = std::move(batched_doc_);
+	String path = batched_path_;
+	batched_path_ = String();
+	if (write_scene_file(path, *doc) && hooks_.persisted) hooks_.persisted(path);
+}
+
 void SyncEngine::apply_to_file(const String &path, std::vector<RemoteOp *> &ops) {
+	if (batched_doc_) {
+		if (path == batched_path_) {
+			apply_to_doc(*batched_doc_, ops, false, false);
+			for (RemoteOp *op : ops) hooks_.applied(path, op->seq, false);
+			return;
+		}
+		// A scene loaded next may instance the held one: it must find it saved.
+		save_batched_file();
+	}
 	// Not open: edit the file on disk (load -> apply -> save).
 	Node *root = nullptr;
 	if (!is_safe_resource_path(path)) {
@@ -1043,9 +1088,29 @@ void SyncEngine::apply_to_file(const String &path, std::vector<RemoteOp *> &ops)
 
 	std::unique_ptr<SyncDocument> doc = SyncDocument::for_scene(path, root);
 	doc->adopt();
+	auto waiting = file_waiting_names_.find(path);
+	if (waiting != file_waiting_names_.end()) doc->set_waiting_names(waiting->second);
 	apply_to_doc(*doc, ops, false, true);
+	if (file_batching_) {
+		// Not saved yet: after a crash these are applied again.
+		for (RemoteOp *op : ops) hooks_.applied(path, op->seq, false);
+		batched_doc_ = std::move(doc);
+		batched_path_ = path;
+		batched_since_ = now_;
+		return;
+	}
+	bool saved = write_scene_file(path, *doc);
+	for (RemoteOp *op : ops) hooks_.applied(path, op->seq, saved);
+}
+
+bool SyncEngine::write_scene_file(const String &path, SyncDocument &doc) {
+	if (doc.waiting_names().empty()) {
+		file_waiting_names_.erase(path);
+	} else {
+		file_waiting_names_[path] = doc.waiting_names();
+	}
 	// A root change may have replaced the root object.
-	root = doc->root_node();
+	Node *root = doc.root_node();
 
 	// Open scenes that instance this one are packed before its cached scene
 	// changes (so their overrides are known), then rebuilt from it.
@@ -1062,13 +1127,13 @@ void SyncEngine::apply_to_file(const String &path, std::vector<RemoteOp *> &ops)
 	}
 	root->queue_free();
 	if (err == OK && hooks_.file_written) hooks_.file_written(path);
-	for (RemoteOp *op : ops) hooks_.applied(path, op->seq, err == OK);
 	if (err != OK) {
 		if (hooks_.notice) hooks_.notice(String("Could not save ") + path, 2);
-		return;
+		return false;
 	}
 	if (EditorFileSystem *fs = EditorInterface::get_singleton()->get_resource_filesystem()) fs->update_file(path);
 	finish_instance_refresh(targets);
+	return true;
 }
 
 void SyncEngine::on_file_replaced(const String &path) {

@@ -1,9 +1,12 @@
 #pragma once
 
+#include "core/state_file.h"
+
 #include <godot_cpp/variant/string.hpp>
 
 #include <cstdint>
 #include <map>
+#include <set>
 
 namespace yhde {
 
@@ -42,9 +45,18 @@ private:
 		int64_t persisted = 0;
 	};
 
+	// Changes from here on start from what was saved.
+	DocSeq &doc_seq(const godot::String &doc);
+
 	godot::String path_;
+	StateFile file_;
 	int64_t applied_seq_ = 0;
 	std::map<godot::String, DocSeq> docs_;
+	// Documents applied past their file in an earlier run (a crash, a scene
+	// held while catching up). That copy is gone: resume_seq() fetches the
+	// rest again, and it is applied again rather than skipped as applied.
+	// The record keeps the old mark until then, so a second crash still knows.
+	std::set<godot::String> previous_run_;
 	bool dirty_ = false;
 };
 

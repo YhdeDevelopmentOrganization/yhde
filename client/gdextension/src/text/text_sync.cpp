@@ -500,6 +500,16 @@ void TextSync::on_rejected(const String &path, const Uuid &client_op_ref, const 
 	// Everything not yet confirmed is sent again against the current text.
 	d->has_outstanding = false;
 	d->has_buffer = false;
+	// The server has other text than the one remembered here. Sending the same
+	// difference would be refused again and again: start from the file, if it
+	// holds the version the log has. Only exactly that version: a saved local
+	// edit read in as the server's text would never be sent.
+	int64_t file_seq = 0;
+	if (code == "TextOutdated" && hooks_.exact && hooks_.exact(path, &file_seq) && file_seq >= d->rev) {
+		d->rev = file_seq;
+		d->server_text = read_text(path);
+		d->dirty = true;
+	}
 	TextOperation op = TextOperation::diff(d->server_text, d->text);
 	if (!op.is_noop()) {
 		d->buffer = op;

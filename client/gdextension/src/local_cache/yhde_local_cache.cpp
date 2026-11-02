@@ -2,8 +2,6 @@
 
 #include "sync/variant_codec.h"
 
-#include <godot_cpp/classes/dir_access.hpp>
-#include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 
 #include <algorithm>
@@ -14,25 +12,27 @@ namespace yhde {
 
 void YhdeLocalCache::configure(const String &file_path) {
 	path_ = file_path;
+	file_.configure(file_path);
 	applied_seq_ = 0;
 	docs_.clear();
+	previous_run_.clear();
 	dirty_ = false;
 }
 
 void YhdeLocalCache::reset() {
 	applied_seq_ = 0;
 	docs_.clear();
+	previous_run_.clear();
 	dirty_ = true;
 }
 
 void YhdeLocalCache::load() {
 	applied_seq_ = 0;
 	docs_.clear();
-	if (path_.is_empty() || !FileAccess::file_exists(path_)) return;
-	Ref<FileAccess> f = FileAccess::open(path_, FileAccess::READ);
-	if (f.is_null()) return;
+	previous_run_.clear();
+	if (path_.is_empty()) return;
 	Variant data;
-	if (!from_json(f->get_as_text(), data) || data.get_type() != Variant::DICTIONARY) return;
+	if (!file_.load(data, [](const Variant &v) { return v.get_type() == Variant::DICTIONARY; })) return;
 	Dictionary d = data;
 	applied_seq_ = int64_t(double(d.get("applied_seq", 0.0)));
 	Dictionary docs = d.get("docs", Dictionary());
@@ -43,6 +43,7 @@ void YhdeLocalCache::load() {
 		s.applied = int64_t(double(e.get("applied", 0.0)));
 		s.persisted = int64_t(double(e.get("persisted", 0.0)));
 		docs_[String(keys[i])] = s;
+		if (s.applied > s.persisted) previous_run_.insert(String(keys[i]));
 	}
 }
 
@@ -59,18 +60,7 @@ void YhdeLocalCache::flush_if_dirty() {
 		docs[kv.first] = e;
 	}
 	d["docs"] = docs;
-	DirAccess::make_dir_recursive_absolute(path_.get_base_dir());
-	String tmp = path_ + ".tmp";
-	{
-		Ref<FileAccess> f = FileAccess::open(tmp, FileAccess::WRITE);
-		if (f.is_null()) {
-			dirty_ = true;
-			return;
-		}
-		f->store_string(to_json(d));
-		f->flush();
-	}
-	DirAccess::rename_absolute(tmp, path_);
+	if (!file_.save(to_json(d))) dirty_ = true;
 }
 
 void YhdeLocalCache::set_applied_seq(int64_t seq) {
@@ -81,17 +71,25 @@ void YhdeLocalCache::set_applied_seq(int64_t seq) {
 
 int64_t YhdeLocalCache::doc_applied(const String &doc) const {
 	auto it = docs_.find(doc);
-	return it == docs_.end() ? 0 : it->second.applied;
+	if (it == docs_.end()) return 0;
+	return previous_run_.count(doc) ? it->second.persisted : it->second.applied;
+}
+
+YhdeLocalCache::DocSeq &YhdeLocalCache::doc_seq(const String &doc) {
+	DocSeq &s = docs_[doc];
+	if (previous_run_.erase(doc)) s.applied = s.persisted;
+	return s;
 }
 
 void YhdeLocalCache::note_applied(const String &doc, int64_t seq, bool persisted) {
-	DocSeq &s = docs_[doc];
+	DocSeq &s = doc_seq(doc);
 	s.applied = std::max(s.applied, seq);
 	if (persisted) s.persisted = std::max(s.persisted, seq);
 	dirty_ = true;
 }
 
 void YhdeLocalCache::note_saved(const String &doc) {
+	if (previous_run_.count(doc)) doc_seq(doc);
 	auto it = docs_.find(doc);
 	if (it == docs_.end() || it->second.persisted == it->second.applied) return;
 	it->second.persisted = it->second.applied;
@@ -99,6 +97,7 @@ void YhdeLocalCache::note_saved(const String &doc) {
 }
 
 bool YhdeLocalCache::note_discarded(const String &doc) {
+	if (previous_run_.count(doc)) doc_seq(doc);
 	auto it = docs_.find(doc);
 	if (it == docs_.end() || it->second.applied == it->second.persisted) return false;
 	it->second.applied = it->second.persisted;

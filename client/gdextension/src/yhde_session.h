@@ -154,6 +154,10 @@ private:
 	// Committed ops waiting for asset bytes (or for ops ahead of them that
 	// wait), in log order: they are applied once the bytes are here.
 	std::deque<yhde::proto::CommittedOp> held_;
+	// Per file, the newest version seen so far in the log: what catching up
+	// may skip to (AssetSync::can_skip_version).
+	std::unordered_map<std::string, int64_t> newest_version_;
+	void note_version(const yhde::proto::CommittedOp &op);
 	bool parse_committed(const yhde::proto::CommittedOp &op, yhde::RemoteOp &out);
 	void check_caught_up();
 	std::function<void(const yhde::RemoteOp &op, const String &subject)> activity_hook_;
@@ -261,6 +265,7 @@ private:
 	double quiet_since_ = -1.0;
 	// Operations applied per frame, fitted to a time budget (drain).
 	size_t ops_per_frame_ = 4000;
+	size_t max_ops_per_frame_ = 4000; // test support: YHDE_OPS_PER_FRAME
 	int64_t last_ack_sent_ = 0;
 	double last_ack_time_ = 0.0;
 	double last_flush_ = 0.0;

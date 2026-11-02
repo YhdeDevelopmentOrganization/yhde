@@ -39,6 +39,8 @@ public:
 		// Is this a shared text file right now (in the log, same bytes on disk)?
 		// `seq` receives the log seq of its current bytes.
 		std::function<bool(const godot::String &path, int64_t *seq)> shared;
+		// Same, and the file has no local edit on top of the log's bytes.
+		std::function<bool(const godot::String &path, int64_t *seq)> exact;
 		// This editor wrote the file itself (not a change to share as bytes).
 		std::function<void(const godot::String &path)> file_written;
 		std::function<void(const godot::String &text, int level)> notice;

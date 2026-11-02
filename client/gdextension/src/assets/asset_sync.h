@@ -1,6 +1,7 @@
 #pragma once
 
 #include "assets/asset_worker.h"
+#include "core/state_file.h"
 #include "core/uuid.h"
 #include "sync/scene_document.h"
 #include "sync/sync_engine.h"
@@ -98,9 +99,19 @@ public:
 	// `pending_ref` receives the registering operation to wait for, if any.
 	bool reference_waits(const godot::String &path, Uuid *pending_ref);
 
+	// Catching up, the log already says a newer version of this file follows.
+	// A file on disk can stay as it is until then: writing every old version
+	// over it would only import them all and show old code for a while. A file
+	// not on disk still gets its version, as edits may need it to exist.
+	bool can_skip_version(const RemoteOp &op) const;
+	void skip_version(const RemoteOp &op);
+
 	// Is this file in the log with this editor's copy in sync (its live text
 	// can start from the disk)? `seq` receives the log seq of its bytes.
 	bool text_base(const godot::String &path, int64_t *seq) const;
+	// Stricter: the file holds exactly the log's bytes, with no local edit on
+	// top of them.
+	bool text_exact(const godot::String &path, int64_t *seq) const;
 
 	// Many files vanished at once (a folder deleted by mistake, a wrong
 	// checkout): their deletion is held until someone confirms it.
@@ -201,6 +212,10 @@ public:
 	// The state file was there but neither it nor its backup could be read:
 	// what this computer has is unknown, so it joins as if for the first time.
 	bool state_lost() const { return state_lost_; }
+	// This editor has a record of the project's files, readable or not.
+	bool has_record() const { return state_.exists(); }
+	// The record came from its backup, which can miss the last half minute.
+	bool state_from_backup() const { return state_.from_backup(); }
 
 private:
 	bool state_lost_ = false;
@@ -214,6 +229,7 @@ private:
 	Hooks hooks_;
 	AssetWorker worker_;
 	godot::String state_file_;
+	StateFile state_;
 	bool dirty_ = false;
 	bool active_ = false;
 	bool caught_up_ = false;

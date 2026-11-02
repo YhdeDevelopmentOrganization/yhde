@@ -447,14 +447,15 @@ public sealed class TeamStore(Database db)
     }
 
     // Who made changes in a project, with how many, for the activity filter.
+    // From the hourly summary (018), not the whole log.
     public async Task<IReadOnlyList<(Guid Id, string Name, long Changes)>> ContributorsAsync(Guid projectId, CancellationToken ct)
     {
         await using var conn = await db.OpenAsync(ct);
         return (await conn.QueryAsync<(Guid, string, long)>(new CommandDefinition(
             """
-            SELECT sl.member_id, (array_agg(sl.member_name ORDER BY sl.started_at DESC))[1], COUNT(*)
-            FROM operations o JOIN branches b ON b.branch_id = o.branch_id JOIN session_log sl ON sl.session_id = o.session_id
-            WHERE b.project_id = @projectId AND b.name = 'main' AND sl.member_id IS NOT NULL
+            SELECT sl.member_id, (array_agg(sl.member_name ORDER BY sl.started_at DESC))[1], SUM(h.n)::bigint
+            FROM op_hourly h JOIN session_log sl ON sl.session_id = h.session_id
+            WHERE h.project_id = @projectId AND sl.member_id IS NOT NULL
             GROUP BY sl.member_id ORDER BY 3 DESC LIMIT 50
             """, new { projectId }, cancellationToken: ct))).ToList();
     }

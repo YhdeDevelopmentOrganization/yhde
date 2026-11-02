@@ -2152,15 +2152,38 @@ void SyncDocument::finish_batch(ApplyContext &ctx) {
 	}
 
 	// Names can collide transiently (swaps, create-then-rename); retry.
+	std::vector<std::pair<Uuid, String>> names;
+	for (const WaitingName &w : waiting_names_) {
+		Node *n = node(w.id);
+		if (n && String(n->get_name()) == w.stand_in) names.emplace_back(w.id, w.wanted);
+	}
+	size_t waited = names.size();
+	names.insert(names.end(), ctx.desired_names.begin(), ctx.desired_names.end());
 	for (int pass = 0; pass < 3; pass++) {
 		bool pending = false;
-		for (auto &dn : ctx.desired_names) {
+		for (auto &dn : names) {
 			Node *n = node(dn.first);
 			if (!n || String(n->get_name()) == dn.second) continue;
 			n->set_name(dn.second);
 			pending = pending || String(n->get_name()) != dn.second;
 		}
 		if (!pending) break;
+	}
+	// A waiting node renamed in a batch that changed nothing else: the
+	// baseline below must take its name, or the next scan of an open scene
+	// sends the rename as this person's.
+	for (size_t i = 0; i < waited && !ctx.structure_changed; i++) {
+		Node *n = node(names[i].first);
+		if (n && String(n->get_name()) == names[i].second) ctx.structure_changed = true;
+	}
+	waiting_names_.clear();
+	for (auto &dn : names) {
+		Node *n = node(dn.first);
+		if (!n || String(n->get_name()) == dn.second) continue;
+		// The newest wish for a node is the last one in the list.
+		auto same = std::find_if(waiting_names_.begin(), waiting_names_.end(), [&](const WaitingName &w) { return w.id == dn.first; });
+		if (same != waiting_names_.end()) waiting_names_.erase(same);
+		waiting_names_.push_back({ dn.first, dn.second, String(n->get_name()) });
 	}
 
 	std::vector<Reach> reach;

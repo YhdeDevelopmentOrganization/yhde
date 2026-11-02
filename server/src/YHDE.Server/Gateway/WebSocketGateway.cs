@@ -42,7 +42,9 @@ public sealed class WebSocketGateway(
     // Catch-up is streamed in pages so a long log never becomes one giant frame
     // (network_protocol.md).
     public const int SyncPageSize = 256;
-    public const long SyncPageBytes = 8 * 1024 * 1024;
+    // Each message must go out within Outbox.SendTimeout (20 s): 2 MiB does
+    // on a 1 Mbit/s line, where 8 MiB pages cut slow connections off forever.
+    public const long SyncPageBytes = 2 * 1024 * 1024;
 
     // Entry point: called by the ASP.NET Core WebSocket middleware for each accepted connection.
     public async Task HandleAsync(WebSocket socket, string? authHeader, AccessGrant grant, CancellationToken ct)

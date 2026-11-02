@@ -84,6 +84,42 @@ and the highest saved to disk. A scene closed without saving gets the rest
 applied again next time, so nothing depends on anyone pressing Save
 ([editor_client.md](editor_client.md) §7).
 
+### Sudden Power Loss
+
+The editor's records (applied `seq`, what each file holds, unsent operations)
+are rewritten up to twice a second, and a written file reaches the disk some
+seconds later. A power loss can leave the newest ones empty, moved-over copies
+included, so a backup rotated at that pace goes with them. Each record therefore
+keeps a backup replaced at most every 30 seconds, by a copy forced onto the disk
+first. After a crash at most that much history is fetched again.
+A files record restored from that backup can miss files a teammate changed
+just before the crash, which would then look like local changes: local changes
+are looked for only once caught up, against the whole log.
+
+Edits applied but not saved when the editor stopped (an open scene, or one
+held while catching up) count from their saved mark on the next start, so the
+replay applies them again instead of skipping them as applied.
+
+### Catching Up
+
+Replaying a long history (the records were lost, or a first join):
+
+- A file on disk does not get versions the log already replaces: it stays as it
+  is until its last version, which is usually what it holds. Old code never
+  shows up for a while and nothing is imported again for nothing. Moves and
+  deletions always run.
+- A scene that is not open stays loaded between batches and is saved every 3
+  seconds, instead of being loaded and saved for every few operations. Only one
+  is held: another scene may instance it, so it is saved before the next is
+  loaded, before a file operation on it and when its tab opens. Until saved its
+  edits count as not persisted, so a crash applies them again.
+- Nothing is applied until the whole log is here. A first join's "is this the
+  right folder?" sees all of the project's files and comes first, and every old
+  version the log replaces is known before it would be written.
+- A rebuilt node arrives before the old one of that name is deleted and gets a
+  stand-in name. However far apart the batches of the two fall, it takes its
+  real name once the old one is gone (unless someone renamed it since).
+
 ## 6. Files
 
 Uploads and downloads resume where they stopped. A file is written only after
