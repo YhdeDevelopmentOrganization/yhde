@@ -106,6 +106,18 @@ public:
 	bool apply_position(const std::string &type, const Uuid &target, const godot::Dictionary &payload, ApplyContext &ctx);
 	void finish_batch(ApplyContext &ctx);
 
+	// A rebuilt node arrives before the old one of that name is deleted, so it
+	// gets a stand-in name ("Lamp2"). The deletion can be in a later batch, even
+	// after the scene file was saved and loaded again: until then the node keeps
+	// waiting for its name, unless someone has renamed it since.
+	struct WaitingName {
+		Uuid id;
+		godot::String wanted;
+		godot::String stand_in;
+	};
+	const std::vector<WaitingName> &waiting_names() const { return waiting_names_; }
+	void set_waiting_names(const std::vector<WaitingName> &names) { waiting_names_ = names; }
+
 	// Lookups for presence overlays.
 	godot::Node *node(const Uuid &id) const;
 	Uuid node_id(godot::Node *n) const;
@@ -241,6 +253,7 @@ private:
 	std::unordered_map<Uuid, ResEntry, UuidHash> res_;
 	std::unordered_map<uint64_t, Uuid> res_by_oid_;
 	std::unordered_set<Uuid, UuidHash> retired_;
+	std::vector<WaitingName> waiting_names_;
 };
 
 godot::String op_key_for(const std::string &type, const godot::Dictionary &payload);
