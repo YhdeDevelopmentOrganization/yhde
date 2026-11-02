@@ -19,6 +19,7 @@ client/
     +-- codec/            every property of every class round-trips
     +-- e2e/              two headless editors collaborate through a server
     +-- resilience/       server loss, offline edits, restart without saving
+    +-- catchup/          replaying a long history after lost records or on a first join
     +-- access/           secrets: refused without one, stored outside the project
 ```
 
