@@ -154,6 +154,10 @@ private:
 	// Committed ops waiting for asset bytes (or for ops ahead of them that
 	// wait), in log order: they are applied once the bytes are here.
 	std::deque<yhde::proto::CommittedOp> held_;
+	// Per file, the newest version seen so far in the log: what catching up
+	// may skip to (AssetSync::can_skip_version).
+	std::unordered_map<std::string, int64_t> newest_version_;
+	void note_version(const yhde::proto::CommittedOp &op);
 	bool parse_committed(const yhde::proto::CommittedOp &op, yhde::RemoteOp &out);
 	void check_caught_up();
 	std::function<void(const yhde::RemoteOp &op, const String &subject)> activity_hook_;

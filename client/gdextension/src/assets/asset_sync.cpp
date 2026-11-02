@@ -1312,6 +1312,20 @@ bool AssetSync::write_blob(const String &path, const std::string &hash, int64_t 
 	return true;
 }
 
+bool AssetSync::can_skip_version(const RemoteOp &op) const {
+	String path = op.payload.get("s", String());
+	return path != "res://project.godot" && !pending_.count(path) && FileAccess::file_exists(path);
+}
+
+void AssetSync::skip_version(const RemoteOp &op) {
+	if (stale(op)) return;
+	String path = op.payload.get("s", String());
+	auto it = incoming_.find(key_of(path));
+	if (it != incoming_.end() && --it->second <= 0) incoming_.erase(it);
+	applied_[path] = op.seq;
+	dirty_ = true;
+}
+
 void AssetSync::apply(const RemoteOp &op) {
 	String path = op.payload.get("s", String());
 	String from = op.payload.get("f", String());

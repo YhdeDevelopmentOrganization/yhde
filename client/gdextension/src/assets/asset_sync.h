@@ -99,6 +99,13 @@ public:
 	// `pending_ref` receives the registering operation to wait for, if any.
 	bool reference_waits(const godot::String &path, Uuid *pending_ref);
 
+	// Catching up, the log already says a newer version of this file follows.
+	// A file on disk can stay as it is until then: writing every old version
+	// over it would only import them all and show old code for a while. A file
+	// not on disk still gets its version, as edits may need it to exist.
+	bool can_skip_version(const RemoteOp &op) const;
+	void skip_version(const RemoteOp &op);
+
 	// Is this file in the log with this editor's copy in sync (its live text
 	// can start from the disk)? `seq` receives the log seq of its bytes.
 	bool text_base(const godot::String &path, int64_t *seq) const;

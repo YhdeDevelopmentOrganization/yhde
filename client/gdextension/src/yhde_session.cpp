@@ -809,10 +809,12 @@ void YhdeSession::on_closed(const String &reason) {
 }
 
 void YhdeSession::subscribe(bool fresh_connection) {
+	engine_.set_file_batching(false);
 	int64_t from = cache_.resume_seq();
 	next_seq_ = from + 1;
 	buffer_.clear();
 	held_.clear();
+	newest_version_.clear();
 	asset_.clear_incoming();
 	syncing_ = true;
 	// On a new connection nothing sent before arrived for sure: send it all
@@ -881,7 +883,9 @@ void YhdeSession::on_frame(const proto::Frame &frame) {
 				return;
 			}
 			for (proto::CommittedOp &op : s.tail) {
-				if (op.seq >= next_seq_) buffer_[op.seq] = std::move(op);
+				if (op.seq < next_seq_) continue;
+				note_version(op);
+				buffer_[op.seq] = std::move(op);
 			}
 			if (!s.has_more) {
 				syncing_ = false;
@@ -902,7 +906,10 @@ void YhdeSession::on_frame(const proto::Frame &frame) {
 			proto::CommittedOp op;
 			if (!proto::decode(frame.payload, op)) return;
 			head_seq_ = std::max(head_seq_, op.seq);
-			if (op.seq >= next_seq_) buffer_[op.seq] = std::move(op);
+			if (op.seq >= next_seq_) {
+				note_version(op);
+				buffer_[op.seq] = std::move(op);
+			}
 			break;
 		}
 		case proto::MsgType::OpRejected: {
@@ -982,6 +989,15 @@ void YhdeSession::resync_after_gap(double now) {
 	resync_not_before_ = now + wait;
 	resyncs_in_a_row_++;
 	subscribe(false);
+}
+
+void YhdeSession::note_version(const proto::CommittedOp &op) {
+	if (!yhde::AssetSync::is_asset_op(op.type)) return;
+	Variant payload;
+	if (!yhde::from_json(from_std(op.payload_json), payload) || payload.get_type() != Variant::DICTIONARY) return;
+	Dictionary d = payload;
+	int64_t &newest = newest_version_[to_std(String(d.get("s", String())))];
+	newest = std::max(newest, op.seq);
 }
 
 bool YhdeSession::parse_committed(const proto::CommittedOp &op, yhde::RemoteOp &r) {
@@ -1087,6 +1103,15 @@ void YhdeSession::process_committed(std::vector<proto::CommittedOp> &ops) {
 			continue;
 		}
 		if (yhde::AssetSync::is_asset_op(r.type)) {
+			// Moves and deletions always run: they change more than these bytes.
+			if (catching_up && !r.own && (r.type == "RegisterAsset" || r.type == "UpdateAsset") && !is_blocked(r.doc) && asset_.can_skip_version(r)) {
+				auto newest = newest_version_.find(to_std(r.doc));
+				if (newest != newest_version_.end() && newest->second > r.seq) {
+					asset_.skip_version(r);
+					last = std::max(last, op.seq);
+					continue;
+				}
+			}
 			String from = r.payload.get("f", String());
 			bool hold = is_blocked(r.doc) || (!from.is_empty() && is_blocked(from));
 			// A file waits for the files it needs (a model for its textures).
