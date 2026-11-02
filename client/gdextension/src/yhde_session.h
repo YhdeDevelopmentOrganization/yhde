@@ -261,6 +261,7 @@ private:
 	double quiet_since_ = -1.0;
 	// Operations applied per frame, fitted to a time budget (drain).
 	size_t ops_per_frame_ = 4000;
+	size_t max_ops_per_frame_ = 4000; // test support: YHDE_OPS_PER_FRAME
 	int64_t last_ack_sent_ = 0;
 	double last_ack_time_ = 0.0;
 	double last_flush_ = 0.0;

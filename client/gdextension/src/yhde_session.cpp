@@ -296,6 +296,11 @@ bool YhdeSession::start(const String &url, const String &project_id, const Strin
 	audit_ = OS::get_singleton()->has_environment("YHDE_AUDIT");
 	debug_ = OS::get_singleton()->has_environment("YHDE_DEBUG");
 	asset_.set_debug(debug_);
+	max_ops_per_frame_ = kMaxOpsPerFrame;
+	if (OS::get_singleton()->has_environment("YHDE_OPS_PER_FRAME")) {
+		max_ops_per_frame_ = size_t(std::max<int64_t>(1, OS::get_singleton()->get_environment("YHDE_OPS_PER_FRAME").to_int()));
+	}
+	ops_per_frame_ = max_ops_per_frame_;
 	audit_log_.clear();
 	engine_.start();
 	connect_editor_signals();
@@ -720,6 +725,7 @@ void YhdeSession::_process(double delta) {
 		process_committed(none);
 	}
 	check_caught_up();
+	if (!syncing_ && next_seq_ > catchup_head_) engine_.set_file_batching(false);
 	engine_.process(t);
 	if (t - last_history_watch_ >= 0.5) {
 		last_history_watch_ = t;
@@ -956,11 +962,13 @@ void YhdeSession::drain() {
 	double took = double(Time::get_singleton()->get_ticks_usec()) / 1e6 - started;
 	// Fit the next frame's share to the time budget: halve after a frame that
 	// took too long, grow again while frames stay well inside it.
-	double budget = syncing_ ? kApplyBudgetSync : kApplyBudgetLive;
+	// The last page arrives long before its operations are applied: history
+	// keeps the catch-up budget until it is all in.
+	double budget = syncing_ || next_seq_ <= catchup_head_ ? kApplyBudgetSync : kApplyBudgetLive;
 	if (took > budget && ops_per_frame_ > 8) {
-		ops_per_frame_ = std::max<size_t>(8, ops_per_frame_ / 2);
+		ops_per_frame_ = std::min(max_ops_per_frame_, std::max<size_t>(8, ops_per_frame_ / 2));
 	} else if (took < budget / 4 && count >= ops_per_frame_) {
-		ops_per_frame_ = std::min(kMaxOpsPerFrame, ops_per_frame_ * 2);
+		ops_per_frame_ = std::min(max_ops_per_frame_, ops_per_frame_ * 2);
 	}
 	if (debug_ && took > budget) UtilityFunctions::print("[yhde] applied ", int64_t(count), " ops in ", int64_t(took * 1000), " ms; next frame takes ", int64_t(ops_per_frame_));
 }
@@ -1051,6 +1059,7 @@ void YhdeSession::process_committed(std::vector<proto::CommittedOp> &ops) {
 
 	std::vector<yhde::RemoteOp> batch;
 	bool catching_up = syncing_ || (!todo.empty() && todo.back().seq <= catchup_head_);
+	engine_.set_file_batching(catching_up);
 	auto flush = [&]() {
 		if (batch.empty()) return;
 		engine_.apply_batch(batch);
@@ -1090,6 +1099,8 @@ void YhdeSession::process_committed(std::vector<proto::CommittedOp> &ops) {
 				continue;
 			}
 			flush();
+			engine_.file_will_change(r.doc);
+			if (!from.is_empty()) engine_.file_will_change(from);
 			bool already = asset_.stale(r); // re-delivered after a re-sync
 			asset_.apply(r);
 			if (!r.own && r.type != "DeleteAsset" && !already) {

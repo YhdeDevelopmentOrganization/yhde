@@ -105,6 +105,13 @@ public:
 
 	void apply_batch(std::vector<RemoteOp> &ops);
 
+	// While catching up, a scene that is not open stays loaded between batches
+	// and is saved now and then, instead of being loaded and saved for every
+	// few operations. Turning it off saves it.
+	void set_file_batching(bool on);
+	// This file is about to be written from the log: a scene held for it goes first.
+	void file_will_change(const godot::String &path);
+
 	void on_scene_saved(const godot::String &path);
 	// The inspector started editing an object: baseline external resource
 	// files before their first edit so that edit is not missed.
@@ -150,6 +157,14 @@ private:
 	void apply_scene_ops(const godot::String &path, std::vector<RemoteOp *> &ops);
 	// Load the file, apply, save it back (documents not open in the editor).
 	void apply_to_file(const godot::String &path, std::vector<RemoteOp *> &ops);
+	// Saves the document's scene to its file. False when that failed.
+	bool write_scene_file(const godot::String &path, SyncDocument &doc);
+	void save_batched_file();
+	std::map<godot::String, std::vector<SyncDocument::WaitingName>> file_waiting_names_;
+	bool file_batching_ = false;
+	std::unique_ptr<SyncDocument> batched_doc_;
+	godot::String batched_path_;
+	double batched_since_ = 0.0;
 
 	// Instances of a scene that changed are rebuilt in every other open scene
 	// (editor_client.md): the open scenes are packed first (the engine then
