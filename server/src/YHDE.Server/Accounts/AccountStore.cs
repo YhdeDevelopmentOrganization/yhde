@@ -103,29 +103,33 @@ public sealed class AccountStore(Database db)
         return token;
     }
 
-    // The live session for a token, touching its last use (at most once a minute).
+    // The live session for a token, touching its last use (at most once a
+    // minute). One round trip: every signed-in request asks this.
     public async Task<(UserSession Session, User User)?> SessionAsync(string token, string kind, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(token) || token.Length > 100) return null;
         await using var conn = await db.OpenAsync(ct);
-        var row = await conn.QuerySingleOrDefaultAsync<SessionRow>(new CommandDefinition(
+        var row = await conn.QuerySingleOrDefaultAsync<SessionUserRow>(new CommandDefinition(
             """
-            UPDATE user_sessions SET last_seen_at = NOW()
-            WHERE token_hash = @hash AND kind = @kind AND revoked_at IS NULL AND expires_at > NOW()
-              AND last_seen_at < NOW() - INTERVAL '1 minute'
-            RETURNING session_id, user_id, kind, device, ip, created_at, last_seen_at, expires_at
-            """,
-            new { hash = Secrets.Hash(token), kind }, cancellationToken: ct))
-            ?? await conn.QuerySingleOrDefaultAsync<SessionRow>(new CommandDefinition(
-            """
-            SELECT session_id, user_id, kind, device, ip, created_at, last_seen_at, expires_at FROM user_sessions
-            WHERE token_hash = @hash AND kind = @kind AND revoked_at IS NULL AND expires_at > NOW()
+            WITH s AS (
+                SELECT session_id, user_id, kind, device, ip, created_at, last_seen_at, expires_at FROM user_sessions
+                WHERE token_hash = @hash AND kind = @kind AND revoked_at IS NULL AND expires_at > NOW()
+            ), touched AS (
+                UPDATE user_sessions SET last_seen_at = NOW()
+                WHERE session_id = (SELECT session_id FROM s) AND last_seen_at < NOW() - INTERVAL '1 minute'
+                RETURNING last_seen_at
+            )
+            SELECT s.session_id, s.user_id, s.kind, s.device, s.ip, s.created_at,
+                   COALESCE((SELECT last_seen_at FROM touched), s.last_seen_at) AS last_seen_at, s.expires_at,
+                   u.email, u.email_verified_at, u.display_name, u.password_hash IS NOT NULL AS has_password,
+                   u.created_at AS user_created_at, u.disabled_at
+            FROM s JOIN users u ON u.user_id = s.user_id
             """,
             new { hash = Secrets.Hash(token), kind }, cancellationToken: ct));
-        if (row is null) return null;
-        var user = await ByIdAsync(row.user_id, ct);
-        if (user is null || user.Disabled) return null;
-        return (row.ToModel(), user);
+        if (row is null || row.disabled_at is not null) return null;
+        var user = new User(row.user_id, row.email, row.email_verified_at is not null, row.display_name, row.has_password, Utc(row.user_created_at), false);
+        var session = new UserSession(row.session_id, row.user_id, row.kind, row.device, row.ip, Utc(row.created_at), Utc(row.last_seen_at), Utc(row.expires_at));
+        return (session, user);
     }
 
     public async Task<IReadOnlyList<UserSession>> SessionsAsync(Guid userId, CancellationToken ct)
@@ -274,6 +278,23 @@ public sealed class AccountStore(Database db)
         public DateTime expires_at { get; init; }
 
         public UserSession ToModel() => new(session_id, user_id, kind, device, ip, Utc(created_at), Utc(last_seen_at), Utc(expires_at));
+    }
+    private sealed class SessionUserRow
+    {
+        public Guid session_id { get; init; }
+        public Guid user_id { get; init; }
+        public string kind { get; init; } = "";
+        public string device { get; init; } = "";
+        public string ip { get; init; } = "";
+        public DateTime created_at { get; init; }
+        public DateTime last_seen_at { get; init; }
+        public DateTime expires_at { get; init; }
+        public string email { get; init; } = "";
+        public DateTime? email_verified_at { get; init; }
+        public string display_name { get; init; } = "";
+        public bool has_password { get; init; }
+        public DateTime user_created_at { get; init; }
+        public DateTime? disabled_at { get; init; }
     }
 #pragma warning restore IDE1006
 }
