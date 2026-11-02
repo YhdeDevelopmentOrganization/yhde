@@ -2157,6 +2157,7 @@ void SyncDocument::finish_batch(ApplyContext &ctx) {
 		Node *n = node(w.id);
 		if (n && String(n->get_name()) == w.stand_in) names.emplace_back(w.id, w.wanted);
 	}
+	size_t waited = names.size();
 	names.insert(names.end(), ctx.desired_names.begin(), ctx.desired_names.end());
 	for (int pass = 0; pass < 3; pass++) {
 		bool pending = false;
@@ -2167,6 +2168,13 @@ void SyncDocument::finish_batch(ApplyContext &ctx) {
 			pending = pending || String(n->get_name()) != dn.second;
 		}
 		if (!pending) break;
+	}
+	// A waiting node renamed in a batch that changed nothing else: the
+	// baseline below must take its name, or the next scan of an open scene
+	// sends the rename as this person's.
+	for (size_t i = 0; i < waited && !ctx.structure_changed; i++) {
+		Node *n = node(names[i].first);
+		if (n && String(n->get_name()) == names[i].second) ctx.structure_changed = true;
 	}
 	waiting_names_.clear();
 	for (auto &dn : names) {
