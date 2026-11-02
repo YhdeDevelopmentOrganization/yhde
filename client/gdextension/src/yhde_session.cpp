@@ -344,7 +344,15 @@ void YhdeSession::switch_project(const Uuid &project, const Uuid &branch) {
 			asset_.restore_pending(op.type, payload, op.client_op_ref);
 		}
 	}
-	asset_.queue_offline_changes();
+	if (asset_.state_from_backup()) {
+		// Files a teammate changed in the half minute the backup misses would
+		// look like local changes and go back over newer versions (the server
+		// does not check what a file version replaces). The scan after catching
+		// up finds the real ones; a newer version from the log keeps a copy.
+		emit_notice("YHDE's record of this project's files was restored from its backup, so local changes are checked again once caught up.", NOTICE_INFO);
+	} else {
+		asset_.queue_offline_changes();
+	}
 	text_.configure(dir.path_join(stem + ".text"));
 	last_ack_sent_ = cache_.applied_seq();
 }

@@ -23,6 +23,8 @@ public:
 	bool load(godot::Variant &out, const std::function<bool(const godot::Variant &)> &valid);
 	// Whether the file or its backup exists, readable or not.
 	bool exists() const;
+	// The last load() came from the backup: up to kBackupInterval old.
+	bool from_backup() const { return from_backup_; }
 
 	bool save(const godot::String &text);
 	// Nothing to keep: the file and its backup go.
@@ -33,6 +35,7 @@ private:
 	double last_backup_ = 0.0;
 	// The file on disk is ours and whole: only such a file may become the backup.
 	bool file_good_ = false;
+	bool from_backup_ = false;
 };
 
 } // namespace yhde

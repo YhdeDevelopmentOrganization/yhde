@@ -57,6 +57,7 @@ void StateFile::configure(const String &path) {
 
 bool StateFile::load(Variant &out, const std::function<bool(const Variant &)> &valid) {
 	file_good_ = false;
+	from_backup_ = false;
 	auto read = [&](const String &path) {
 		if (!FileAccess::file_exists(path)) return false;
 		Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
@@ -70,7 +71,8 @@ bool StateFile::load(Variant &out, const std::function<bool(const Variant &)> &v
 		file_good_ = true;
 		return true;
 	}
-	return read(path_ + String(".bak"));
+	from_backup_ = read(path_ + String(".bak"));
+	return from_backup_;
 }
 
 bool StateFile::exists() const {
