@@ -123,7 +123,10 @@ if it doesn't have it, checks the hash and writes the file. The routes are in
 ## 7. Rules
 
 1. File bytes never go over the operation stream.
-2. Identical bytes are stored once.
+2. Identical bytes are stored once, compressed on disk (Brotli) when that saves at least 10 %.
+   Files that are compressed already (PNG, JPEG, Ogg, zip...) stay as they are; readers always
+   get the original bytes. `Yhde:CompressBlobs=false` stops new compression. A server older
+   than this change cannot read the compressed `<hash>.br` files, so don't downgrade past it.
 3. A stored blob never changes, so old history always finds its files.
 4. Every transfer is hash checked.
 5. Every file change is an operation in the log.

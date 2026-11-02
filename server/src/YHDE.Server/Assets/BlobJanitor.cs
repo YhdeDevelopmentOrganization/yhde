@@ -6,11 +6,13 @@ namespace YHDE.Server.Assets;
 // Hourly clean-up of the blob store (assets.md): unfinished uploads nobody
 // continued for a week, and uploads no operation used within two days. Such a
 // file's bytes go only when no project holds it, no news picture uses it, and
-// it was not touched within a day.
+// it was not touched within a day. Then stored files are compressed where
+// that saves space (BlobStore.CompactAsync).
 public sealed class BlobJanitor(BlobStore blobs, IProjectBlobs projectBlobs, Database db, ILogger<BlobJanitor> logger) : BackgroundService
 {
     public static readonly TimeSpan PendingLifetime = TimeSpan.FromDays(2);
     private static readonly TimeSpan Every = TimeSpan.FromHours(1);
+    private static readonly TimeSpan CompactBudget = TimeSpan.FromMinutes(20);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -24,6 +26,16 @@ public sealed class BlobJanitor(BlobStore blobs, IProjectBlobs projectBlobs, Dat
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 logger.LogWarning(ex, "Blob clean-up failed; trying again in an hour");
+            }
+            try
+            {
+                // Compress what is worth it, a while each hour, on a worker
+                // thread so requests never wait for it (BlobStore.CompactAsync).
+                await Task.Run(() => blobs.CompactAsync(CompactBudget, stoppingToken), stoppingToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Compressing stored files failed; trying again in an hour");
             }
         } while (await timer.WaitForNextTickAsync(stoppingToken));
     }
