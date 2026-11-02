@@ -936,6 +936,11 @@ void YhdeSession::on_frame(const proto::Frame &frame) {
 
 void YhdeSession::drain() {
 	if (buffer_.empty() || join_pending_) return;
+	// Catching up waits for the whole log. A first join's check_join() must see
+	// all of the project's files and ask before anything here is touched, and
+	// knowing what comes later saves writing what it replaces. The pages take
+	// seconds when no frame is held up applying them.
+	if (syncing_) return;
 	// Drop anything we already processed.
 	while (!buffer_.empty() && buffer_.begin()->first < next_seq_) buffer_.erase(buffer_.begin());
 	std::vector<proto::CommittedOp> ready;
@@ -1658,6 +1663,7 @@ String YhdeSession::get_status_text() const {
 			return String::utf8("Connecting…");
 		case STATE_SYNCING: {
 			int64_t done = std::max<int64_t>(0, next_seq_ - 1);
+			if (!buffer_.empty()) done = std::max(done, buffer_.rbegin()->first);
 			if (head_seq_ > 0 && done < head_seq_) {
 				return String("Syncing ") + String::num_int64(done) + " / " + String::num_int64(head_seq_);
 			}
