@@ -1069,6 +1069,13 @@ bool AssetSync::text_base(const String &path, int64_t *seq) const {
 	return true;
 }
 
+bool AssetSync::text_exact(const String &path, int64_t *seq) const {
+	if (!text_base(path, seq)) return false;
+	const DiskEntry &d = disk_.at(path);
+	return d.hash == log_.at(path).hash && int64_t(FileAccess::get_modified_time(path)) == d.mtime &&
+			int64_t(FileAccess::get_size(path)) == d.size;
+}
+
 bool AssetSync::reference_waits(const String &reference, Uuid *pending_ref) {
 	if (!active_) return false;
 	String path = reference.get_slice("::", 0);

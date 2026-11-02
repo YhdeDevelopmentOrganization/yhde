@@ -213,6 +213,7 @@ YhdeSession::YhdeSession() {
 	yhde::TextSync::Hooks th;
 	th.emit = [this](yhde::LocalOp &&op) { return emit_local(std::move(op), 0); };
 	th.shared = [this](const String &path, int64_t *seq) { return asset_.text_base(path, seq); };
+	th.exact = [this](const String &path, int64_t *seq) { return asset_.text_exact(path, seq); };
 	th.file_written = [this](const String &path) { asset_.absorb(path); };
 	th.notice = [this](const String &text, int level) { emit_notice(text, level); };
 	text_.set_hooks(th);

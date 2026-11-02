@@ -109,6 +109,9 @@ public:
 	// Is this file in the log with this editor's copy in sync (its live text
 	// can start from the disk)? `seq` receives the log seq of its bytes.
 	bool text_base(const godot::String &path, int64_t *seq) const;
+	// Stricter: the file holds exactly the log's bytes, with no local edit on
+	// top of them.
+	bool text_exact(const godot::String &path, int64_t *seq) const;
 
 	// Many files vanished at once (a folder deleted by mistake, a wrong
 	// checkout): their deletion is held until someone confirms it.
