@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/state_file.h"
 #include "core/uuid.h"
 
 #include <godot_cpp/variant/string.hpp>
@@ -85,6 +86,7 @@ private:
 	std::unordered_map<Uuid, UndoBatch, UuidHash> batches_;
 	std::unordered_map<std::string, int> masks_;
 	godot::String path_;
+	StateFile file_;
 	bool dirty_ = false;
 };
 

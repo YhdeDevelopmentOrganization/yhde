@@ -30,6 +30,7 @@ add_library(yhde SHARED
     src/core/msgpack.cpp
     src/core/sha256.cpp
     src/core/url.cpp
+    src/core/state_file.cpp
     src/assets/asset_worker.cpp
     src/assets/asset_sync.cpp
     src/text/text_operation.cpp

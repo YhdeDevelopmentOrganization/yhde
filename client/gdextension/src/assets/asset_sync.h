@@ -1,6 +1,7 @@
 #pragma once
 
 #include "assets/asset_worker.h"
+#include "core/state_file.h"
 #include "core/uuid.h"
 #include "sync/scene_document.h"
 #include "sync/sync_engine.h"
@@ -214,6 +215,7 @@ private:
 	Hooks hooks_;
 	AssetWorker worker_;
 	godot::String state_file_;
+	StateFile state_;
 	bool dirty_ = false;
 	bool active_ = false;
 	bool caught_up_ = false;

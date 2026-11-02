@@ -24,6 +24,7 @@ void YhdeOperationQueue::index(const PendingOp &op, int delta) {
 
 void YhdeOperationQueue::configure(const String &file_path) {
 	path_ = file_path;
+	file_.configure(file_path);
 	ops_.clear();
 	masks_.clear();
 	batches_.clear();
@@ -67,11 +68,11 @@ void YhdeOperationQueue::load() {
 	ops_.clear();
 	masks_.clear();
 	batches_.clear();
-	if (path_.is_empty() || !FileAccess::file_exists(path_)) return;
-	Ref<FileAccess> f = FileAccess::open(path_, FileAccess::READ);
-	if (f.is_null()) return;
+	if (path_.is_empty()) return;
 	Variant data;
-	if (!from_json(f->get_as_text(), data)) return;
+	// Ops the backup brings back that were already committed are safe to send
+	// again: the server drops duplicates by op id.
+	if (!file_.load(data, [](const Variant &v) { return v.get_type() == Variant::ARRAY || v.get_type() == Variant::DICTIONARY; })) return;
 	Array items;
 	if (data.get_type() == Variant::ARRAY) {
 		items = data; // first format: a bare list of operations
@@ -121,9 +122,8 @@ void YhdeOperationQueue::load() {
 void YhdeOperationQueue::flush_if_dirty() {
 	if (!dirty_ || path_.is_empty()) return;
 	dirty_ = false;
-	DirAccess::make_dir_recursive_absolute(path_.get_base_dir());
 	if (ops_.empty()) {
-		if (FileAccess::file_exists(path_)) DirAccess::remove_absolute(path_);
+		file_.remove();
 		return;
 	}
 	Array items;
@@ -155,18 +155,7 @@ void YhdeOperationQueue::flush_if_dirty() {
 	root["v"] = 2;
 	root["ops"] = items;
 	root["batches"] = batches;
-	// Write-then-rename so a crash mid-write never corrupts the queue.
-	String tmp = path_ + ".tmp";
-	{
-		Ref<FileAccess> f = FileAccess::open(tmp, FileAccess::WRITE);
-		if (f.is_null()) {
-			dirty_ = true;
-			return;
-		}
-		f->store_string(to_json(root));
-		f->flush();
-	}
-	DirAccess::rename_absolute(tmp, path_);
+	if (!file_.save(to_json(root))) dirty_ = true;
 }
 
 void YhdeOperationQueue::push(PendingOp op) {

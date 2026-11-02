@@ -2,8 +2,6 @@
 
 #include "sync/variant_codec.h"
 
-#include <godot_cpp/classes/dir_access.hpp>
-#include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 
 #include <algorithm>
@@ -14,6 +12,7 @@ namespace yhde {
 
 void YhdeLocalCache::configure(const String &file_path) {
 	path_ = file_path;
+	file_.configure(file_path);
 	applied_seq_ = 0;
 	docs_.clear();
 	dirty_ = false;
@@ -28,11 +27,9 @@ void YhdeLocalCache::reset() {
 void YhdeLocalCache::load() {
 	applied_seq_ = 0;
 	docs_.clear();
-	if (path_.is_empty() || !FileAccess::file_exists(path_)) return;
-	Ref<FileAccess> f = FileAccess::open(path_, FileAccess::READ);
-	if (f.is_null()) return;
+	if (path_.is_empty()) return;
 	Variant data;
-	if (!from_json(f->get_as_text(), data) || data.get_type() != Variant::DICTIONARY) return;
+	if (!file_.load(data, [](const Variant &v) { return v.get_type() == Variant::DICTIONARY; })) return;
 	Dictionary d = data;
 	applied_seq_ = int64_t(double(d.get("applied_seq", 0.0)));
 	Dictionary docs = d.get("docs", Dictionary());
@@ -59,18 +56,7 @@ void YhdeLocalCache::flush_if_dirty() {
 		docs[kv.first] = e;
 	}
 	d["docs"] = docs;
-	DirAccess::make_dir_recursive_absolute(path_.get_base_dir());
-	String tmp = path_ + ".tmp";
-	{
-		Ref<FileAccess> f = FileAccess::open(tmp, FileAccess::WRITE);
-		if (f.is_null()) {
-			dirty_ = true;
-			return;
-		}
-		f->store_string(to_json(d));
-		f->flush();
-	}
-	DirAccess::rename_absolute(tmp, path_);
+	if (!file_.save(to_json(d))) dirty_ = true;
 }
 
 void YhdeLocalCache::set_applied_seq(int64_t seq) {

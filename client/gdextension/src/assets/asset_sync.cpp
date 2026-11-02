@@ -236,6 +236,7 @@ std::vector<String> AssetSync::project_dependencies(const String &path) const {
 
 void AssetSync::configure(const String &state_file) {
 	state_file_ = state_file;
+	state_.configure(state_file);
 	reset();
 	dirty_ = false;
 }
@@ -263,21 +264,17 @@ void AssetSync::load() {
 	// The file, else the copy kept from the write before it. A file that is
 	// there but unreadable (a full disk, a crash while writing) is never taken
 	// as "nothing known": every local file would look new.
-	auto read = [](const String &path, Dictionary &out) {
-		if (!FileAccess::file_exists(path)) return false;
-		Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
-		if (f.is_null()) return false;
-		Variant data;
-		if (!from_json(f->get_as_text(), data) || data.get_type() != Variant::DICTIONARY) return false;
-		out = data;
-		return int64_t(double(out.get("v", 0.0))) == kStateVersion;
-	};
-	Dictionary d;
-	bool had = FileAccess::file_exists(state_file_) || FileAccess::file_exists(state_file_ + ".bak");
-	if (!read(state_file_, d) && !read(state_file_ + ".bak", d)) {
-		state_lost_ = had;
+	Variant data;
+	bool usable = state_.load(data, [](const Variant &v) {
+		if (v.get_type() != Variant::DICTIONARY) return false;
+		Dictionary state = v;
+		return int64_t(double(state.get("v", 0.0))) == kStateVersion;
+	});
+	if (!usable) {
+		state_lost_ = state_.exists();
 		return;
 	}
+	Dictionary d = data;
 	Dictionary log = d.get("log", Dictionary());
 	Array keys = log.keys();
 	for (int64_t i = 0; i < keys.size(); i++) {
@@ -358,34 +355,8 @@ void AssetSync::flush_if_dirty() {
 	d["disk"] = disk;
 	d["applied"] = applied;
 	d["held"] = held;
-	DirAccess::make_dir_recursive_absolute(state_file_.get_base_dir());
-	// Written beside it, checked and flushed, then moved over it; the old one
-	// stays as the backup. A failed write keeps the old file and tries again.
-	String tmp = state_file_ + ".tmp";
-	String text = to_json(d);
-	int64_t bytes = text.utf8().length();
-	{
-		Ref<FileAccess> f = FileAccess::open(tmp, FileAccess::WRITE);
-		if (f.is_null() || !f->store_string(text)) {
-			dirty_ = true;
-			return;
-		}
-		f->flush();
-		if (f->get_error() != OK) {
-			dirty_ = true;
-			return;
-		}
-	}
-	if (int64_t(FileAccess::get_size(tmp)) != bytes) {
-		DirAccess::remove_absolute(tmp);
-		dirty_ = true;
-		return;
-	}
-	if (FileAccess::file_exists(state_file_)) {
-		DirAccess::remove_absolute(state_file_ + ".bak");
-		DirAccess::rename_absolute(state_file_, state_file_ + ".bak");
-	}
-	if (DirAccess::rename_absolute(tmp, state_file_) != OK) dirty_ = true;
+	// A failed write keeps the old file and tries again.
+	if (!state_.save(to_json(d))) dirty_ = true;
 }
 
 // Lifecycle
