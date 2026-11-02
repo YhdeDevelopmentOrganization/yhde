@@ -212,6 +212,8 @@ public:
 	// The state file was there but neither it nor its backup could be read:
 	// what this computer has is unknown, so it joins as if for the first time.
 	bool state_lost() const { return state_lost_; }
+	// This editor has a record of the project's files, readable or not.
+	bool has_record() const { return state_.exists(); }
 	// The record came from its backup, which can miss the last half minute.
 	bool state_from_backup() const { return state_.from_backup(); }
 

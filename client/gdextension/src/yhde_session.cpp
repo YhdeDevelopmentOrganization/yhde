@@ -320,7 +320,6 @@ void YhdeSession::switch_project(const Uuid &project, const Uuid &branch) {
 	text_.flush_if_dirty();
 	cache_.configure(dir.path_join(stem + ".cache.json"));
 	cache_.load();
-	fresh_join_ = cache_.applied_seq() == 0;
 	join_pending_ = false;
 	queue_.configure(dir.path_join(stem + ".queue.json"));
 	queue_.load();
@@ -330,6 +329,11 @@ void YhdeSession::switch_project(const Uuid &project, const Uuid &branch) {
 	asset_.set_project(to_std(project_id_.to_string()));
 	asset_.configure(dir.path_join(stem + ".assets.json"));
 	asset_.load();
+	// A first join is a folder this project has never seen. Nothing applied
+	// is not enough: an editor that joined while the log was empty and made
+	// its first edits offline has applied nothing either, and its own unsent
+	// files would make its folder look like another game.
+	fresh_join_ = cache_.applied_seq() == 0 && queue_.empty() && !asset_.has_record();
 	if (asset_.state_lost()) {
 		// Without it every file here would look like a new local change:
 		// start over as a first join, which asks before anything is shared.
