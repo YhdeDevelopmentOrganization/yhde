@@ -1,5 +1,6 @@
 #include "register_types.h"
 
+#include "core/crash_log.h"
 #include "yhde_session.h"
 #ifdef YHDE_DIAGNOSTICS
 #include "diagnostics/yhde_diagnostics.h"
@@ -19,6 +20,7 @@ void initialize_yhde_module(ModuleInitializationLevel p_level) {
 		return;
 	}
 	GDREGISTER_CLASS(YhdeSession);
+	GDREGISTER_INTERNAL_CLASS(yhde::YhdeLogger);
 #ifdef YHDE_DIAGNOSTICS
 	GDREGISTER_CLASS(YhdeDiagnostics);
 #endif

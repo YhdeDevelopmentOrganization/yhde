@@ -42,6 +42,7 @@ const Style := preload("style.gd")
 const Avatar := preload("avatar.gd")
 const ChatPanel := preload("chat_panel.gd")
 const CommentsPanel := preload("comments_panel.gd")
+const SyncNotices := preload("sync_notices.gd")
 const MAX_ACTIVITY := 40
 ## The options menu: what you want to see of others.
 const OPTION_ITEMS := [
@@ -126,6 +127,7 @@ var _trust_check: CheckBox
 var _advanced_button: Button
 var _advanced: VBoxContainer
 var _files: PanelContainer
+var notices: Control # sync_notices.gd
 var _files_text: Label
 var _held: VBoxContainer
 var _held_text: Label
@@ -194,6 +196,8 @@ func _init() -> void:
 	root.add_child(_signin)
 	_files = _build_files()
 	root.add_child(_files)
+	notices = SyncNotices.new()
+	root.add_child(notices)
 
 	_tabs = TabBar.new()
 	# Tabs scroll rather than making the dock wider than the person wants.

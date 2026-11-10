@@ -4,12 +4,12 @@ extends EditorPlugin
 ##
 ## This file only checks that this editor can run YHDE, then hands over to
 ## main.gd. It is written to load on any Godot 4.x: if the rest of YHDE (made
-## for 4.7) were loaded by an older editor, Godot would only print "Unable to
-## load addon script" and disable it. This way people are told what to do.
+## for 4.7 and newer) were loaded by an older editor, Godot would only print
+## "Unable to load addon script" and disable it. This way people are told what to do.
 
 const REQUIRED := [4, 7]
-const TESTED := "4.7.2"
-const DOWNLOAD := "https://godotengine.org/download/archive/4.7.2-stable/"
+const TESTED := "4.7 to 4.8"
+const DOWNLOAD := "https://godotengine.org/download/"
 
 var _main: Object # main.gd, once the version is right
 var _problem: Control
@@ -18,9 +18,9 @@ var _problem: Control
 func _enter_tree() -> void:
 	var v := Engine.get_version_info()
 	if v.major != REQUIRED[0] or v.minor < REQUIRED[1]:
-		_explain("YHDE needs Godot %s" % TESTED,
-			"This editor is Godot %s, but YHDE is made for Godot %d.%d (tested on %s). Open this project with Godot %s; you can download it from %s.\n\nYour project is fine. Nothing was changed." % [
-				v.string, REQUIRED[0], REQUIRED[1], TESTED, TESTED, DOWNLOAD])
+		_explain("YHDE needs Godot %d.%d or newer" % REQUIRED,
+			"This editor is Godot %s, but YHDE needs Godot %d.%d or newer (tested on %s). Open this project with a newer Godot; you can download it from %s.\n\nYour project is fine. Nothing was changed." % [
+				v.string, REQUIRED[0], REQUIRED[1], TESTED, DOWNLOAD])
 		return
 	var script: Script = load("res://addons/yhde/main.gd")
 	if script == null or not script.can_instantiate():

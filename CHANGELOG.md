@@ -4,6 +4,37 @@ What changed in each YHDE release. The website's "What's new" page shows the
 same history (`server/admin-ui/src/site/pages/Changelog.tsx`), plus release
 notes published on the admin page.
 
+## v0.6.10 (not released)
+
+### Godot add-on
+
+- A file your editor cannot write (a read-only folder, a full disk, a file in
+  use, a name Windows cannot store) is no longer deleted for your whole
+  team. Before, it was gone for everyone about a second later. Now the
+  panel lists it with the reason, YHDE keeps trying, and nothing is sent for
+  it from your editor until it is written. "Keep mine" shares your copy
+  instead.
+- A file your editor could not update is no longer sent back to the team
+  with its old content when something touches it.
+- Writing a teammate's file no longer removes your copy first, so a failed
+  write leaves you with the old file instead of none.
+- A deletion that would remove a whole add-on, or a whole top-level folder,
+  now waits for you to confirm, however few files it has.
+- When Godot closed unexpectedly, the panel says so on the next start and
+  offers "Copy report": what YHDE was doing and Godot's last errors.
+- Works with Godot 4.7 and 4.8 (tested on 4.7.0, 4.7.2 and 4.8 beta 3).
+- Files whose names Windows cannot store (`< > " | ? *`, `CON`, `NUL`,
+  `COM1` and the like) are not shared, and you are told why.
+
+### Server
+
+- A file change made against a version of the file that is no longer
+  current is refused, so an editor that missed a teammate's change can no
+  longer overwrite or delete it. The editor keeps a copy of its version and
+  takes the current one.
+- Add-ons older than 0.6.10 can still sign in, but their changes are refused
+  until they update.
+
 ## v0.6.9 (2026-11-02)
 
 ### Godot add-on

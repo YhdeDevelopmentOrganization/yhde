@@ -204,6 +204,30 @@ public sealed class OperationRepositoryIntegrationTests : IAsyncLifetime
             .Should().Equal([null]);
     }
 
+    [Fact]
+    public async Task The_current_hash_of_a_path_follows_updates_moves_and_deletes()
+    {
+        if (_opRepo is null) return; // Skip if Docker unavailable.
+        var h1 = new string('1', 64);
+        var h2 = new string('2', 64);
+        async Task Commit(string type, string payload) =>
+            await _opRepo!.CommitAsync(new OperationSubmission(Guid.NewGuid(), type, Guid.NewGuid(), payload, Guid.NewGuid(), 0),
+                DefaultBranchId, DevIdentity.ActorId, Guid.NewGuid(), default);
+        async Task<string?> At(string path) => await _opRepo!.GetCurrentFileHashAsync(DefaultBranchId, path, default);
+
+        (await At("res://a.png")).Should().BeNull();
+        await Commit(OperationType.RegisterAsset, $$"""{"s":"res://a.png","h":"{{h1}}","n":1}""");
+        (await At("res://a.png")).Should().Be(h1);
+        (await At("res://A.png")).Should().BeNull("only the exact path counts");
+        await Commit(OperationType.UpdateAsset, $$"""{"s":"res://a.png","h":"{{h2}}","n":1,"o":"{{h1}}"}""");
+        (await At("res://a.png")).Should().Be(h2);
+        await Commit(OperationType.MoveAsset, $$"""{"s":"res://b.png","f":"res://a.png","h":"{{h2}}","n":1,"o":"{{h2}}"}""");
+        (await At("res://a.png")).Should().BeNull();
+        (await At("res://b.png")).Should().Be(h2);
+        await Commit(OperationType.DeleteAsset, $$"""{"s":"res://b.png","o":"{{h2}}"}""");
+        (await At("res://b.png")).Should().BeNull();
+    }
+
     private static OperationSubmission MakeSubmission(long parentSeq) => new(
         OpId: Guid.NewGuid(),
         Type: OperationType.ChangeProperty,

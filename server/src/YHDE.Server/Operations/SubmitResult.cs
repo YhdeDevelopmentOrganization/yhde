@@ -19,6 +19,10 @@ public enum RejectionCode
     // file was replaced, or the edit is very old). The editor re-sends its
     // unsent typing against the current text.
     TextOutdated,
+    // A file change made against bytes the file no longer has (a teammate
+    // changed, moved or deleted it first). Nothing is committed; the editor
+    // keeps a copy of its version and takes the current one.
+    Outdated,
 }
 
 public abstract class SubmitResult

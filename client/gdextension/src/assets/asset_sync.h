@@ -136,7 +136,20 @@ public:
 	static bool is_native_or_build_file(const godot::String &path);
 	static bool may_run_in_editor(const godot::String &path, const godot::String &bytes_file);
 
+	// Files the log has that could not be written on this computer (a folder
+	// it may not write, a full disk, a locked file), with why: [{path, reason}].
+	// They are tried again, and never sent from here until they are written.
+	godot::Array unwritten() const;
+	// Share this computer's copy of an unwritten file after all, against the
+	// log's current version.
+	void keep_local(const godot::String &path);
+
 	godot::Dictionary status() const;
+
+#ifdef YHDE_DIAGNOSTICS
+	// Tests: end the process at once after this many more files written.
+	static void stop_after_writes(int64_t count) { stop_after_writes_ = count; }
+#endif
 
 	// Paths grouped with their source file: art/a.png.import -> art/a.png.
 	static godot::String key_of(const godot::String &path);
@@ -170,6 +183,17 @@ private:
 		std::string hash; // "" = delete
 		Uuid ref;
 	};
+	struct Unwritten {
+		std::string hash; // "" = the file should be gone
+		int64_t size = 0;
+		int64_t seq = 0;
+		godot::String reason;
+		double next_try = 0.0;
+		int tries = 0;
+	};
+	// Whether a missing file counts as deleted here: only one this editor had
+	// with the log's bytes (or made itself) is (assets.md).
+	enum class Proof { Derive, Yes, No };
 	struct HeldCode {
 		std::string hash;
 		int64_t size = 0;
@@ -182,7 +206,7 @@ private:
 	void finish_pass(double now);
 	void observe(const godot::String &path, int64_t size, int64_t mtime, double now);
 	void on_result(AssetResult &r, double now);
-	void evaluate(const godot::String &path, double now, bool urgent, int depth = 0);
+	void evaluate(const godot::String &path, double now, bool urgent, int depth = 0, Proof proof = Proof::Derive);
 	// Share a file now if the log does not have its current bytes (a
 	// companion or dependency that must be in the log before `path`).
 	void evaluate_companion(const godot::String &path, double now, int depth);
@@ -200,13 +224,17 @@ private:
 			bool before_doc = false);
 	void need_blob(const std::string &hash, const godot::String &path, int64_t size);
 	bool local_copy(const std::string &hash, godot::String &from);
-	bool write_blob(const godot::String &path, const std::string &hash, int64_t size);
+	// "" when written, else why not.
+	godot::String write_blob(const godot::String &path, const std::string &hash, int64_t size);
+	void note_unwritten(const godot::String &path, const std::string &hash, int64_t size, int64_t seq, const godot::String &reason);
+	void retry_unwritten(bool all);
 	void remove_file(const godot::String &path, bool backup);
 	void backup(const godot::String &path);
 	void apply_project_settings(const godot::String &incoming);
 	bool needs_approval(const godot::String &path, const std::string &hash);
-	// Whether this many files gone at once must be confirmed first.
-	bool is_mass_delete(size_t count) const;
+	// Whether these files gone at once must be confirmed first: many of them,
+	// or all of a top-level folder or of an add-on.
+	bool is_mass_delete(const std::vector<godot::String> &paths) const;
 
 public:
 	// The state file was there but neither it nor its backup could be read:
@@ -219,6 +247,9 @@ public:
 
 private:
 	bool state_lost_ = false;
+#ifdef YHDE_DIAGNOSTICS
+	static inline int64_t stop_after_writes_ = -1;
+#endif
 	std::set<godot::String> unshareable_; // told once each
 	void release_accepted_code();
 	godot::String incoming_path(const std::string &hash) const;
@@ -264,6 +295,7 @@ private:
 	std::map<godot::String, HeldCode> held_code_; // code from others waiting for this person's OK
 	bool trust_code_ = false;
 	std::map<godot::String, std::string> restoring_; // path -> log hash being put back
+	std::map<godot::String, Unwritten> unwritten_;
 
 	// Transfers.
 	std::vector<std::pair<std::string, godot::String>> to_check_; // hash, a path holding it

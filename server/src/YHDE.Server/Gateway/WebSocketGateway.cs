@@ -419,6 +419,12 @@ public sealed class WebSocketGateway(
                 "Forbidden", "You can view this project but not change it. Ask the project's owner for edit access.", ct);
             return;
         }
+        if (!ServerInfo.MayEdit(session.ClientVersion))
+        {
+            await sessionManager.SendRejectedAsync(session, clientOpRef, opId,
+                "UpdateNeeded", $"This YHDE add-on is too old to change this project. Update it to {ServerInfo.Version} in the YHDE panel.", ct);
+            return;
+        }
 
         // A file's bytes must be in this project (uploaded here, or already in
         // its log) before an operation may use them (assets.md).
@@ -501,6 +507,11 @@ public sealed class WebSocketGateway(
         if (!session.Grant.CanEdit(session.SubscribedProjectId!.Value))
         {
             await sessionManager.SendErrorAsync(session, 403, "You can view this project but not change it.", false, ct);
+            return;
+        }
+        if (!ServerInfo.MayEdit(session.ClientVersion))
+        {
+            await sessionManager.SendErrorAsync(session, 403, $"This YHDE add-on is too old to change this project. Update it to {ServerInfo.Version} in the YHDE panel.", false, ct);
             return;
         }
 

@@ -837,6 +837,7 @@ func _refresh_people() -> void:
 
 func _refresh_footer() -> void:
 	var s: Dictionary = session.get_status()
+	panel.notices.refresh(session)
 	if s.state == Style.STATE_OFFLINE:
 		panel.set_footer("")
 		panel.set_hint("")

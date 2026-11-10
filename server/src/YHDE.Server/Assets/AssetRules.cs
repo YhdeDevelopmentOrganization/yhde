@@ -89,7 +89,7 @@ public static class AssetRules
         {
             var name = path[ImportedPrefix.Length..];
             return name.Length > 0 && !name.StartsWith('.') && !name.Contains('/') && !name.Contains('\\') && !name.Contains(':')
-                && !name.Contains('\0') && name.Trim() == name && !name.EndsWith('.') && !IsMachineFile(name);
+                && !name.Contains('\0') && name.Trim() == name && !name.EndsWith('.') && !IsMachineFile(name) && WindowsCanStore(name);
         }
         var relative = path[6..];
         if (relative.Length == 0 || relative.Contains('\\') || relative.Contains('\0') || relative.Contains(':')) return false;
@@ -99,11 +99,27 @@ public static class AssetRules
             var segment = segments[i];
             if (segment.Length == 0 || segment == "." || segment == "..") return false;
             if (segment.Trim() != segment || segment.EndsWith('.')) return false; // Windows cannot store these
+            if (!WindowsCanStore(segment)) return false;
             var isDirectory = i < segments.Length - 1;
             if (isDirectory && segment.StartsWith('.')) return false;
         }
         if (relative.StartsWith("addons/yhde/", StringComparison.OrdinalIgnoreCase)) return false;
         return !IsMachineFile(segments[^1]);
+    }
+
+    // Characters and device names (CON, NUL, COM1...) Windows cannot use in a
+    // file or folder name, with any extension.
+    private static readonly string[] DeviceNames =
+        ["con", "prn", "aux", "nul",
+         "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "com\u00b9", "com\u00b2", "com\u00b3",
+         "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9", "lpt\u00b9", "lpt\u00b2", "lpt\u00b3"];
+
+    public static bool WindowsCanStore(string name)
+    {
+        if (name.IndexOfAny(['<', '>', '"', '|', '?', '*']) >= 0) return false;
+        var dot = name.IndexOf('.');
+        var stem = (dot < 0 ? name : name[..dot]).TrimEnd(' ').ToLowerInvariant();
+        return !DeviceNames.Contains(stem);
     }
 
     // Per-machine and temporary files, never shared (the editor skips them

@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # godot-cpp (GDExtension bindings)
 # godot-cpp v10 is versioned independently from Godot and targets a chosen
-# engine API. YHDE targets Godot 4.7 (tested on 4.7.2).
+# engine API. YHDE targets Godot 4.7 (tested on 4.7.0, 4.7.2 and 4.8).
 #
 # The native core is editor-only: it hooks the Godot editor, so we always build
 # the "editor" target. To build offline, point
@@ -31,6 +31,7 @@ add_library(yhde SHARED
     src/core/sha256.cpp
     src/core/url.cpp
     src/core/state_file.cpp
+    src/core/crash_log.cpp
     src/assets/asset_worker.cpp
     src/assets/asset_sync.cpp
     src/text/text_operation.cpp

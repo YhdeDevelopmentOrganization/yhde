@@ -32,6 +32,10 @@ public interface IOperationRepository
     Task<Operation?> GetLatestAssetOpAsync(Guid branchId, Guid targetId, CancellationToken ct);
 
     // Files on the branch now whose path equals `path` but for capitals.
+    // The content hash the file at this exact path holds now, or null when no
+    // file is there (never registered, deleted, or moved away).
+    Task<string?> GetCurrentFileHashAsync(Guid branchId, string path, CancellationToken ct);
+
     Task<IReadOnlyList<string>> LivePathsDifferingInCaseAsync(Guid branchId, string path, CancellationToken ct);
 
     // Operations of one type on one target after a seq, in log order.

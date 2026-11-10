@@ -96,14 +96,34 @@ if it doesn't have it, checks the hash and writes the file. The routes are in
   they first appear and when they change outside the editor. Files the engine
   writes itself are taken in, never sent again.
 - The YHDE add-on folder (`addons/yhde/`, any letter case) is never shared or
-  touched. `project.godot` can change but can't be deleted or moved; the
+  touched. Names Windows cannot store are not shared either, and the sender
+  is told once: `< > " | ? *`, the device names (`CON`, `NUL`, `COM1`...)
+  with any extension, a name ending in a space or a dot. Names that differ
+  only in capitals are refused by the server. Godot 4.7 and newer write
+  paths longer than 260 characters on Windows, so long paths are not
+  refused. `project.godot` can change but can't be deleted or moved; the
   editor and the server both refuse that.
-- When 20 or more known files disappear in one scan (a folder deleted by
-  mistake, a wrong checkout), nothing is deleted for the team. The panel asks
-  whether to restore them or delete them for everyone. Files a teammate
-  deletes go to this computer's trash.
+- A file is deleted for the team only when this editor had it with the
+  log's bytes (or made it) and it then disappeared
+  ([ADR 0018](adr/0018-deletions-need-proof.md)). A file the editor could not
+  write (a read-only folder, a full disk, a locked file) is "not written
+  here": the panel lists it with the reason, the editor tries again, and
+  nothing is sent for it from this editor until the log's version is written
+  or the person chooses "Keep mine". A file the log has that is missing here
+  for no known reason is fetched again.
+- When 20 or more known files disappear in one scan, or more than a fifth of
+  a small project, or all of an add-on or of a top-level folder (a folder
+  deleted by mistake, a wrong checkout), nothing is deleted for the team. The
+  panel asks whether to restore them or delete them for everyone. Files a
+  teammate deletes go to this computer's trash.
+- Writing a teammate's file never removes this computer's copy first: the
+  old file stays until the new one is in place.
 - Registering bytes the log already has for that path is answered
   `AlreadyCurrent` and not logged.
+- A change names the bytes it replaces (`o`). The server refuses with
+  `Outdated` an update, move or deletion whose `o` is not what the path holds
+  now, and a registration of a path another file already has. The editor
+  keeps its copy in `.godot/yhde/replaced/` and takes the current version.
 - Each editor remembers the last file operation it applied per file, and skips
   ones delivered again after a re-sync, so old bytes never overwrite newer
   work. A received `.uid` or `.import` waits up to 30 seconds for its file's

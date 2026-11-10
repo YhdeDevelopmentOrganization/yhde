@@ -26,9 +26,10 @@ to end up with the same result.
 - Scripts are different: typing at the same time is merged, not overwritten.
   The server adjusts each edit for the ones stored before it
   ([text_editing.md](text_editing.md)).
-- Files: the later `UpdateAsset` wins. An update made against an old version of
-  a file still wins by order, and the editor keeps a copy of local unsent
-  changes it overwrites ([assets.md](assets.md) §5).
+- Files: the first change wins. Each names the bytes it replaces, and the
+  server refuses one made against an older version (`Outdated`); that editor
+  keeps a copy of its version and gets the current one
+  ([assets.md](assets.md) §5, [ADR 0018](adr/0018-deletions-need-proof.md)).
 
 The result only depends on the log, so replaying it always gives the same
 outcome.

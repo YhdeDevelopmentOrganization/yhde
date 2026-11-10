@@ -31,7 +31,7 @@ Scenes are generated state and are never synchronized directly.
 
 ## Client
 
-Godot 4.7.x
+Godot 4.7.x and 4.8.x
 
 GDExtension C++
 

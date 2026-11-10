@@ -265,6 +265,25 @@ public sealed class OperationRepository(Database db) : IOperationRepository
         return row is null ? null : MapRow(row);
     }
 
+    public async Task<string?> GetCurrentFileHashAsync(Guid branchId, string path, CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        // The latest file op naming the path, as the file or as a move's
+        // source (both through the lower() indexes of 017).
+        var row = await conn.QueryFirstOrDefaultAsync<(string Type, string? S, string? F, string? H)>(new CommandDefinition(
+            """
+            SELECT type, payload->>'s', payload->>'f', payload->>'h' FROM operations
+            WHERE branch_id = @branchId
+              AND type IN ('RegisterAsset', 'UpdateAsset', 'MoveAsset', 'DeleteAsset')
+              AND ((lower(payload->>'s') = lower(@path) AND payload->>'s' = @path)
+                OR (type = 'MoveAsset' AND lower(payload->>'f') = lower(@path) AND payload->>'f' = @path))
+            ORDER BY seq DESC
+            LIMIT 1
+            """, new { branchId, path }, cancellationToken: ct));
+        if (row.Type is null || row.Type == "DeleteAsset" || (row.Type == "MoveAsset" && row.F == path)) return null;
+        return row.H;
+    }
+
     public async Task<IReadOnlyList<string>> LivePathsDifferingInCaseAsync(Guid branchId, string path, CancellationToken ct)
     {
         await using var conn = await db.OpenAsync(ct);

@@ -26,5 +26,6 @@ that replaces the old one.
 | [0015](0015-accounts-and-sign-in.md) | Accounts on the website, Godot signs in through it | Built |
 | [0016](0016-people-belong-to-projects.md) | People belong to projects, not teams | Built |
 | [0017](0017-statistics-from-summaries.md) | Statistics read summaries, not the log | Built |
+| [0018](0018-deletions-need-proof.md) | Deletions need proof; file changes name what they replace | Built |
 
 Start with 0001, which everything else depends on, then 0002.
