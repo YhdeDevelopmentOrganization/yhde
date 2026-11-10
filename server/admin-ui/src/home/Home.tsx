@@ -128,7 +128,7 @@ const TEXT = {
         ]
       : [
           { q: "What does the beta cost?", a: "Nothing. During the beta YHDE is free, and we don't ask for payment details. Paid plans start with version 1.0, and we tell everyone who makes projects well before." },
-          { q: "How many people can join?", a: `Up to ${BETA_INVITES} invited teammates in each of your ${BETA_PROJECTS} projects, and ${VIEWERS_PER_PROJECT} more who only watch through a view link.` },
+          { q: "How many people can join?", a: `Up to ${BETA_INVITES} invited teammates in each of your ${BETA_PROJECTS} projects, and ${VIEWERS_PER_PROJECT} more who only watch through a watch-only link.` },
         ]),
     { q: "Do I have to stop using Git?", a: "No. YHDE works alongside Git. Many teams keep Git for history and releases." },
     { q: "What if two people change the same thing at the same moment?", a: "Both see the same result right away: the most recent change wins, and nobody ends up with a broken or conflicted file." },

@@ -18,6 +18,7 @@ signal site_requested(path: String)
 signal invite_connect_requested
 signal project_create_requested(project_name: String)
 signal project_link_requested(project_id: String)
+signal invite_people_requested(project_id: String, project_name: String)
 signal invite_requested(project_id: String, email: String)
 signal invite_cancel_requested(project_id: String, invite_id: String)
 signal disconnect_requested
@@ -152,6 +153,11 @@ var _activity_entries: Array[Dictionary] = []
 var _activity_dirty := false
 var _since_render := 0.0
 var _time_refresh := 0.0
+var _root: VBoxContainer
+var _header: Control
+var _pages_box: Control
+var _first_run_on := false # ui/first_run.gd is shown instead of the usual content
+var _invite_people: Button
 
 
 func _init() -> void:
@@ -173,8 +179,10 @@ func _init() -> void:
 	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.add_child(root)
+	_root = root
 
-	root.add_child(_build_header())
+	_header = _build_header()
+	root.add_child(_header)
 	_problem = _message_card(Style.danger())
 	_problem_text = _problem.get_child(0) as Label
 	_problem.tooltip_text = "Click to dismiss"
@@ -211,6 +219,7 @@ func _init() -> void:
 	var pages := Control.new()
 	pages.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	pages.clip_contents = true
+	_pages_box = pages
 	root.add_child(pages)
 	_pages.append(_build_people())
 	_chat = ChatPanel.new()
@@ -237,6 +246,23 @@ func _init() -> void:
 	root.add_child(_footer)
 	set_state(Style.STATE_OFFLINE, "Offline", "Not connected")
 	_let_text_wrap(self)
+
+
+## The first-run view (ui/first_run.gd) goes at the top; while it shows, the
+## header, sign-in card, tabs and footer are hidden. Messages, the
+## right-folder question and the file cards below it stay.
+func add_first_run(view: Control) -> void:
+	_root.add_child(view)
+	_root.move_child(view, 0)
+
+
+func show_first_run(on: bool) -> void:
+	if on == _first_run_on:
+		return
+	_first_run_on = on
+	_header.visible = not on
+	_footer.visible = not on
+	set_state(_state, _state_chip.text, _detail_base)
 
 
 ## Button texts wrap onto more lines in a narrow dock, so the panel is never
@@ -607,11 +633,11 @@ func _project_card(p: Dictionary) -> Control:
 	menu.tooltip_text = "More"
 	var items := menu.get_popup()
 	if str(p.get("role", "owner")) == "owner":
-		items.add_item("Copy a view link", 0)
+		items.add_item("Invite people", 0)
 	items.add_item("Open on the website", 1)
 	items.id_pressed.connect(func(id: int) -> void:
 		if id == 0:
-			project_link_requested.emit(str(p.get("id", "")))
+			invite_people_requested.emit(str(p.get("id", "")), str(p.get("name", "")))
 		else:
 			site_requested.emit("/app#/projects/%s" % p.get("id", "")))
 	top.add_child(menu)
@@ -672,7 +698,10 @@ func set_options(options: Dictionary) -> void:
 		popup.set_item_checked(popup.get_item_index(i), _options.get(items[i][0], true))
 
 
-func set_project(name: String) -> void:
+func set_project(name: String, id := "") -> void:
+	if id != "" and id != _project_id:
+		_project_id = id
+		_fill_team(_dashboard)
 	if name == _project:
 		return
 	_project = name
@@ -762,9 +791,18 @@ func _build_people() -> Control:
 	_people = VBoxContainer.new()
 	_people.add_theme_constant_override("separation", int(Style.px(2)))
 	col.add_child(_people)
-	_people_empty = Style.label("Nobody else is here yet. Invite your team on the website (Team page), then they sign in here.", true, Style.small_size())
+	_people_empty = Style.label("Nobody else is here right now.", true, Style.small_size())
 	_people_empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(_people_empty)
+	# The project's owner invites people from here (ui/invite_dialog.gd).
+	_invite_people = Button.new()
+	_invite_people.text = "Invite people"
+	_invite_people.icon = Style.icon("Add")
+	_invite_people.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	Style.secondary_button(_invite_people)
+	_invite_people.visible = false
+	_invite_people.pressed.connect(func() -> void: invite_people_requested.emit(_current_project(), _project))
+	col.add_child(_invite_people)
 	scroll.add_child(col)
 	return scroll
 
@@ -938,7 +976,9 @@ func _fill_team(d: Dictionary) -> void:
 			project = p
 	_team_box.visible = not project.is_empty()
 	var owns: bool = str(project.get("role", "")) == "owner"
-	_invite_row.visible = owns and not project.get("archived", false)
+	_invite_row.visible = false # the owner invites with "Invite people" (People tab)
+	if _invite_people:
+		_invite_people.visible = owns and not project.get("archived", false)
 	if project.is_empty():
 		return
 	var members: Array = project.get("members", [])
@@ -1048,7 +1088,7 @@ func set_state(state: int, text: String, detail: String) -> void:
 	_detail_base = detail
 	_refresh_detail()
 	_options_button.visible = not offline
-	_signin.visible = offline
+	_signin.visible = offline and not _first_run_on
 	var home: Container = _signin_col if offline else _team_page
 	if _signed_in.get_parent() != home:
 		_signed_in.get_parent().remove_child(_signed_in)
@@ -1056,7 +1096,8 @@ func set_state(state: int, text: String, detail: String) -> void:
 		if offline:
 			_signin_col.move_child(_signed_in, 1)
 	_leave_button.visible = not offline
-	_tabs.visible = not offline
+	_tabs.visible = not offline and not _first_run_on
+	_pages_box.visible = not _first_run_on
 	for i in _pages.size():
 		_pages[i].visible = not offline and i == _tabs.current_tab
 	# Live is the normal case and needs no label; anything else says what is going on.

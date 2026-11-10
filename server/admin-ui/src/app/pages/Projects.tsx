@@ -1,4 +1,4 @@
-import { useRef, useState } from "react"
+import { useRef, useState, type ReactNode } from "react"
 import { AlertTriangle, ChevronRight, Download, Plus, Upload, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -6,8 +6,9 @@ import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { ago, bytes, num } from "@/admin/format"
 import { Bars, EmptyState, LiveTag, Panel, PeerStack } from "@/world/parts"
-import { FAILED, JOIN_KEY, PageHead, call, go } from "../App"
-import { StartOwning } from "../StartOwning"
+import { FAILED, JOIN_KEY, PageHead, call, go, run } from "../App"
+import { COMPANY } from "@/site/company"
+import { OFFICIAL, SITE, operatorName } from "@/world/site"
 import { api, planUsage, projectImage, useAppState, type MyPlan, type Project, type State } from "../store"
 
 export function ProjectsPage() {
@@ -19,9 +20,22 @@ export function ProjectsPage() {
   const archived = mine.filter((p) => p.archived)
   const usage = s.plan ? planUsage(s.plan) : null
   const canMake = !!s.plan && !usage?.projectsFull && !usage?.storageFull
-  // The form shows when asked for, and always while there are none yet;
-  // the button only while it's hidden.
-  const formOpen = canMake && (creating || !mine.length)
+
+  // Nothing yet: the two ways in, and nothing else.
+  if (!s.projects.length)
+    return (
+      <>
+        <PageHead title="Projects" />
+        <div className="grid gap-5 lg:grid-cols-2">
+          <Panel title="Start a project">
+            <StartForm />
+          </Panel>
+          <Panel title="I was invited">
+            <InvitedForm />
+          </Panel>
+        </div>
+      </>
+    )
 
   return (
     <>
@@ -39,7 +53,7 @@ export function ProjectsPage() {
                 <Download /> Godot add-on
               </a>
             </Button>
-            {canMake && !formOpen ? (
+            {canMake && !creating ? (
               <Button onClick={() => setCreating(true)}>
                 <Plus /> New project
               </Button>
@@ -47,41 +61,24 @@ export function ProjectsPage() {
           </>
         }
       />
-      <JoinForm />
       {s.plan ? <Limits plan={s.plan} /> : null}
-      {formOpen ? <NewProject onDone={() => setCreating(false)} canClose={mine.length > 0} /> : null}
+      {creating && canMake ? <NewProject onDone={() => setCreating(false)} /> : null}
 
-      {s.plan ? (
+      {mine.length ? (
         <section className="grid gap-3">
-          {live.length ? live.map((p) => <ProjectRow key={p.id} p={p} s={s} />) : mine.length ? (
+          {live.length ? live.map((p) => <ProjectRow key={p.id} p={p} s={s} />) : (
             <EmptyState title="No active projects">Restore an archived project below, or make a new one.</EmptyState>
-          ) : null}
+          )}
         </section>
       ) : null}
 
       {shared.length ? (
-        <section className="mt-10 grid gap-3">
-          <h2 className="label-dim">Shared with you</h2>
+        <section className={`${mine.length ? "mt-10 " : ""}grid gap-3`}>
+          {mine.length ? <h2 className="label-dim">Shared with you</h2> : null}
           {shared.map((p) => (
             <ProjectRow key={p.id} p={p} s={s} />
           ))}
         </section>
-      ) : null}
-
-      {!s.plan ? (
-        <div className="mt-10 grid gap-5">
-          {!shared.length ? (
-            <EmptyState title="No projects yet">
-              When someone invites you into their project, it shows up here. You can also make your own below.
-            </EmptyState>
-          ) : null}
-          {!s.user.emailVerified ? (
-            <p className="rounded-2xl bg-card px-5 py-4 text-sm text-dim">
-              Invited to a project? Confirm your email address first (we sent you a link), or open the link in the invitation email.
-            </p>
-          ) : null}
-          <StartOwning />
-        </div>
       ) : null}
 
       {archived.length ? (
@@ -96,14 +93,122 @@ export function ProjectsPage() {
           </div>
         </details>
       ) : null}
+
+      <div className="mt-10 grid gap-3">
+        {!s.plan ? (
+          <More title="Start your own project">
+            <StartForm />
+          </More>
+        ) : null}
+        <More title="Have an invite link or code?" open={hasJoinCode()}>
+          <InvitedForm />
+        </More>
+      </div>
     </>
   )
 }
 
-// Joining someone's project with its join code. A code from a link
-// (/app#/join/<code>) arrives filled in.
-function JoinForm() {
-  const [code, setCode] = useState(() => {
+function More({ title, open, children }: { title: string; open?: boolean; children: ReactNode }) {
+  return (
+    <details className="group" open={open}>
+      <summary className="label-dim flex w-fit cursor-pointer list-none items-center gap-2 hover:text-sky [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" /> {title}
+      </summary>
+      <div className="mt-4 max-w-xl rounded-[1.25rem] bg-card p-5">{children}</div>
+    </details>
+  )
+}
+
+// Making a project from nothing. Someone who can't make projects yet types
+// the access code here too (during the beta it comes from us).
+function StartForm() {
+  const s = useAppState()
+  const [name, setName] = useState("")
+  const [code, setCode] = useState("")
+  const [busy, setBusy] = useState(false)
+  const needsCode = !s.plan && s.teamsNeedCode !== false
+  const usage = s.plan ? planUsage(s.plan) : null
+  const full = !!usage && (usage.projectsFull || usage.storageFull)
+  const ask = OFFICIAL ? COMPANY.email : SITE.operator?.email
+  return (
+    <form
+      className="grid gap-4"
+      onSubmit={async (e) => {
+        e.preventDefault()
+        setBusy(true)
+        if (!s.plan && !(await run(() => api.startOwning(code)))) {
+          setBusy(false)
+          return
+        }
+        const id = await call(() => api.createProject(name))
+        setBusy(false)
+        if (id !== FAILED) go(`/projects/${id}`)
+      }}
+    >
+      <p className="text-sm text-dim">Name your game. You get a folder to open in Godot, with YHDE already in it.</p>
+      <div className="grid gap-2">
+        <Label htmlFor="start-name" className="label-dim">
+          Name
+        </Label>
+        <Input id="start-name" className="h-10" placeholder="Skyward" maxLength={80} value={name} onChange={(e) => setName(e.target.value)} disabled={busy} />
+      </div>
+      {needsCode ? (
+        <div className="grid gap-2">
+          <Label htmlFor="start-code" className="label-dim">
+            Access code
+          </Label>
+          <Input
+            id="start-code"
+            className="h-10 font-mono uppercase"
+            value={code}
+            maxLength={40}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(e) => setCode(e.target.value)}
+            disabled={busy}
+          />
+          <p className="text-xs text-dim">
+            {OFFICIAL ? "During the beta, starting a project needs a code from us." : `Starting a project on this server needs a code from ${operatorName()}.`}
+            {ask ? (
+              <>
+                {" "}
+                Ask for one at{" "}
+                <a className="text-sky underline-offset-4 hover:underline" href={`mailto:${ask}`}>
+                  {ask}
+                </a>
+                .
+              </>
+            ) : null}
+          </p>
+        </div>
+      ) : null}
+      {full ? <p className="text-xs text-text">You can't start another project now: archive and delete one first.</p> : null}
+      <Button type="submit" className="w-fit" disabled={busy || full || !name.trim() || (needsCode && !code.trim())}>
+        {busy ? "Starting…" : "Start a project"}
+      </Button>
+      <p className="text-xs text-dim">
+        Have a game already?{" "}
+        <a className="text-sky underline-offset-4 hover:underline" href="/docs#share-a-game">
+          Share it from Godot
+        </a>
+        .
+      </p>
+    </form>
+  )
+}
+
+function hasJoinCode() {
+  try {
+    return !!localStorage.getItem(JOIN_KEY)
+  } catch {
+    return false
+  }
+}
+
+// An invite link (pasted) opens its page; a project's code (typed) joins it.
+// A code from a link (/app#/join/<code>) arrives filled in.
+function InvitedForm() {
+  const [value, setValue] = useState(() => {
     try {
       const c = localStorage.getItem(JOIN_KEY) ?? ""
       localStorage.removeItem(JOIN_KEY)
@@ -115,35 +220,41 @@ function JoinForm() {
   const [busy, setBusy] = useState(false)
   return (
     <form
-      className="mb-6 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl bg-card px-5 py-4"
+      className="grid gap-4"
       onSubmit={async (e) => {
         e.preventDefault()
+        const v = value.trim()
+        // A link's token (or the whole link): its page on this site.
+        const token = /(?:^|\/join\/)([A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4})\/?$/i.exec(v)?.[1]
+        if (token) {
+          location.href = `/join/${token.toUpperCase()}`
+          return
+        }
         setBusy(true)
-        const r = await call(() => api.joinWithCode(code), "You're in. Open it in Godot from the YHDE panel.")
+        const r = await call(() => api.joinWithCode(v), "You're in.")
         setBusy(false)
         if (r !== FAILED) {
-          setCode("")
+          setValue("")
           go(`/projects/${r.id}`)
         }
       }}
     >
-      <Label htmlFor="join-code" className="text-sm font-semibold text-text">
-        Join a project
-      </Label>
-      <Input
-        id="join-code"
-        className="h-9 w-40 font-mono uppercase"
-        placeholder="K7QM-2XRD"
-        value={code}
-        maxLength={12}
-        autoComplete="off"
-        spellCheck={false}
-        onChange={(e) => setCode(e.target.value)}
-      />
-      <Button type="submit" className="h-9" disabled={busy || !code.trim()}>
-        {busy ? "Joining…" : "Join"}
-      </Button>
-      <span className="text-xs text-dim">Enter the join code the project's owner gave you.</span>
+      <p className="text-sm text-dim">Paste the invite link, or type the code you were given.</p>
+      <div className="flex gap-2">
+        <Input
+          aria-label="Invite link or code"
+          className="h-10"
+          placeholder="Link or code"
+          value={value}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => setValue(e.target.value)}
+          disabled={busy}
+        />
+        <Button type="submit" className="h-10" disabled={busy || !value.trim()}>
+          {busy ? "Joining…" : "Continue"}
+        </Button>
+      </div>
     </form>
   )
 }
@@ -215,7 +326,7 @@ function ProjectRow({ p, s }: { p: Project; s: State }) {
   )
 }
 
-function NewProject({ onDone, canClose }: { onDone: () => void; canClose: boolean }) {
+function NewProject({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState("")
   const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
@@ -225,11 +336,9 @@ function NewProject({ onDone, canClose }: { onDone: () => void; canClose: boolea
       className="mb-8 border-sky/50"
       title="New project"
       action={
-        canClose ? (
-          <Button variant="ghost" size="icon-sm" aria-label="Close" onClick={onDone}>
-            <X />
-          </Button>
-        ) : null
+        <Button variant="ghost" size="icon-sm" aria-label="Close" onClick={onDone}>
+          <X />
+        </Button>
       }
     >
       <form

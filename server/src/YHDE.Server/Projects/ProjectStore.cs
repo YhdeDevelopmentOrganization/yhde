@@ -29,10 +29,12 @@ public sealed record LinkInfo(
     DateTimeOffset? ExpiresAt,
     int? MaxUses,
     int Uses,
-    DateTimeOffset? RevokedAt);
+    DateTimeOffset? RevokedAt,
+    string Access = "view");
 
-// What a used link grants: a starter download for this project.
-public sealed record LinkUse(Guid LinkId, Guid ProjectId, string Label, int Uses);
+// What a used link grants: a starter download for this project. Access:
+// "view" (the download gets a watch-only invite code) or "edit" (a join ticket).
+public sealed record LinkUse(Guid LinkId, Guid ProjectId, string Label, int Uses, string Access = "view");
 
 // What deleting a project removed (for the audit log and the admin page).
 public sealed record ProjectDeletion(long Operations, long ChatMessages, long CommentThreads, long Invites, long Links);
@@ -70,7 +72,7 @@ public interface IProjectStore
     Task<IReadOnlyList<ProjectStats>> StatsAsync(CancellationToken ct);
 
     // Download links. Returns the link and its token (shown once, never stored).
-    Task<(LinkInfo Link, string Token)> CreateLinkAsync(Guid projectId, string label, DateTimeOffset? expiresAt, int? maxUses, CancellationToken ct);
+    Task<(LinkInfo Link, string Token)> CreateLinkAsync(Guid projectId, string label, DateTimeOffset? expiresAt, int? maxUses, CancellationToken ct, string access = "view");
     Task<IReadOnlyList<LinkInfo>> ListLinksAsync(Guid projectId, CancellationToken ct);
     Task RevokeLinkAsync(Guid linkId, CancellationToken ct);
     // Removes a link from the list for good (it stops working, if it still
@@ -83,6 +85,9 @@ public interface IProjectStore
     Task<LinkUse?> UseLinkAsync(string token, CancellationToken ct);
     // The same check without using the link up (the page before the download).
     Task<LinkUse?> PeekLinkAsync(string token, CancellationToken ct);
+    // The project a link was for, whether or not it still works (a dead
+    // link's page names who to ask for a new one). Null: no such link.
+    Task<Guid?> ProjectOfLinkAsync(string token, CancellationToken ct) => Task.FromResult<Guid?>(null);
 
     // Removes an archived project and everything in it. Null: not archived
     // (or no such project), nothing removed.
@@ -223,20 +228,21 @@ public sealed class ProjectStore(Database db) : IProjectStore
         return (invite, code);
     }
 
-    public async Task<(LinkInfo Link, string Token)> CreateLinkAsync(Guid projectId, string label, DateTimeOffset? expiresAt, int? maxUses, CancellationToken ct)
+    public async Task<(LinkInfo Link, string Token)> CreateLinkAsync(Guid projectId, string label, DateTimeOffset? expiresAt, int? maxUses, CancellationToken ct, string access = "view")
     {
+        if (access is not ("view" or "edit")) throw new ArgumentOutOfRangeException(nameof(access));
         var token = LinkToken.New();
-        var link = new LinkInfo(Guid.NewGuid(), projectId, label, DateTimeOffset.UtcNow, expiresAt, maxUses, 0, null);
+        var link = new LinkInfo(Guid.NewGuid(), projectId, label, DateTimeOffset.UtcNow, expiresAt, maxUses, 0, null, access);
         await using var conn = await db.OpenAsync(ct);
         await conn.ExecuteAsync(new CommandDefinition(
             """
-            INSERT INTO download_links (link_id, project_id, token_hash, label, created_at, expires_at, max_uses)
-            VALUES (@LinkId, @ProjectId, @hash, @Label, @created, @expires, @MaxUses)
+            INSERT INTO download_links (link_id, project_id, token_hash, label, created_at, expires_at, max_uses, access)
+            VALUES (@LinkId, @ProjectId, @hash, @Label, @created, @expires, @MaxUses, @Access)
             """,
             new
             {
                 link.LinkId, link.ProjectId, hash = LinkToken.Hash(token), link.Label, created = link.CreatedAt.UtcDateTime,
-                expires = expiresAt?.UtcDateTime, link.MaxUses,
+                expires = expiresAt?.UtcDateTime, link.MaxUses, link.Access,
             },
             cancellationToken: ct));
         return (link, token);
@@ -247,7 +253,7 @@ public sealed class ProjectStore(Database db) : IProjectStore
         await using var conn = await db.OpenAsync(ct);
         var rows = await conn.QueryAsync<LinkRow>(new CommandDefinition(
             """
-            SELECT link_id, project_id, label, created_at, expires_at, max_uses, uses, revoked_at
+            SELECT link_id, project_id, label, created_at, expires_at, max_uses, uses, revoked_at, access
             FROM download_links WHERE project_id = @projectId ORDER BY created_at
             """,
             new { projectId }, cancellationToken: ct));
@@ -259,7 +265,7 @@ public sealed class ProjectStore(Database db) : IProjectStore
         await using var conn = await db.OpenAsync(ct);
         var rows = await conn.QueryAsync<LinkRow>(new CommandDefinition(
             """
-            SELECT link_id, project_id, label, created_at, expires_at, max_uses, uses, revoked_at
+            SELECT link_id, project_id, label, created_at, expires_at, max_uses, uses, revoked_at, access
             FROM download_links ORDER BY created_at
             """,
             cancellationToken: ct));
@@ -311,10 +317,10 @@ public sealed class ProjectStore(Database db) : IProjectStore
               AND l.revoked_at IS NULL
               AND (l.expires_at IS NULL OR l.expires_at > NOW())
               AND (l.max_uses IS NULL OR l.uses < l.max_uses)
-            RETURNING l.link_id, l.project_id, l.label, l.uses
+            RETURNING l.link_id, l.project_id, l.label, l.uses, l.access
             """,
             new { hash = LinkToken.Hash(token) }, cancellationToken: ct));
-        return row is null ? null : new LinkUse(row.link_id, row.project_id, row.label, row.uses);
+        return row is null ? null : new LinkUse(row.link_id, row.project_id, row.label, row.uses, row.access);
     }
 
     public async Task<LinkUse?> PeekLinkAsync(string token, CancellationToken ct)
@@ -322,7 +328,7 @@ public sealed class ProjectStore(Database db) : IProjectStore
         await using var conn = await db.OpenAsync(ct);
         var row = await conn.QuerySingleOrDefaultAsync<LinkUseRow>(new CommandDefinition(
             """
-            SELECT l.link_id, l.project_id, l.label, l.uses
+            SELECT l.link_id, l.project_id, l.label, l.uses, l.access
             FROM download_links l JOIN projects p ON p.project_id = l.project_id
             WHERE l.token_hash = @hash AND p.archived_at IS NULL
               AND l.revoked_at IS NULL
@@ -330,7 +336,15 @@ public sealed class ProjectStore(Database db) : IProjectStore
               AND (l.max_uses IS NULL OR l.uses < l.max_uses)
             """,
             new { hash = LinkToken.Hash(token) }, cancellationToken: ct));
-        return row is null ? null : new LinkUse(row.link_id, row.project_id, row.label, row.uses);
+        return row is null ? null : new LinkUse(row.link_id, row.project_id, row.label, row.uses, row.access);
+    }
+
+    public async Task<Guid?> ProjectOfLinkAsync(string token, CancellationToken ct)
+    {
+        await using var conn = await db.OpenAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<Guid?>(new CommandDefinition(
+            "SELECT project_id FROM download_links WHERE token_hash = @hash",
+            new { hash = LinkToken.Hash(token) }, cancellationToken: ct));
     }
 
     public async Task<ProjectDeletion?> DeleteArchivedAsync(Guid projectId, CancellationToken ct)
@@ -468,9 +482,10 @@ public sealed class ProjectStore(Database db) : IProjectStore
         public int? max_uses { get; init; }
         public int uses { get; init; }
         public DateTime? revoked_at { get; init; }
+        public string access { get; init; } = "view";
 
         public LinkInfo ToModel() => new(link_id, project_id, label, Utc(created_at), expires_at is { } e ? Utc(e) : null,
-            max_uses, uses, revoked_at is { } r ? Utc(r) : null);
+            max_uses, uses, revoked_at is { } r ? Utc(r) : null, access);
     }
 
     private sealed class LinkUseRow
@@ -479,6 +494,7 @@ public sealed class ProjectStore(Database db) : IProjectStore
         public Guid project_id { get; init; }
         public string label { get; init; } = "";
         public int uses { get; init; }
+        public string access { get; init; } = "view";
     }
 
     private sealed class StatsRow

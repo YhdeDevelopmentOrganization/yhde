@@ -114,7 +114,7 @@ export function DevicePage({ route }: { route: Route }) {
               <div>
                 <h1 className="display text-[2rem] text-text">Sign in to YHDE in Godot?</h1>
                 <p className="mt-2 text-dim">
-                  <span className="text-text">{ask.device}</span> wants to use your account, {me?.name}. Only allow it if you just pressed Sign in in Godot.
+                  <span className="text-text">{ask.device}</span> wants to use your account, {me?.name}. Only allow it if you just pressed Sign in or Join in Godot.
                 </p>
               </div>
               <div className="rounded-2xl bg-bg px-5 py-4 text-center">

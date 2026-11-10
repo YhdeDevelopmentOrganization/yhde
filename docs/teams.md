@@ -19,7 +19,7 @@ People belong to **projects**, not teams (migration 014).
   any number of projects, of any number of owners, and needs no access code
   for that. Joining one never takes anyone out of another.
 - The owner decides everything about a project: who is in it, their access,
-  view links, rename, image, archive, delete, and handing it over. Members
+  invite links, rename, image, archive, delete, and handing it over. Members
   open it, see who else is in it, and can leave. There are no admins.
 - **Handing a project over.** The owner can make a member the owner (they
   must be able to make projects themselves, with room for one more project
@@ -49,9 +49,10 @@ One that ran out stays listed for 30 days, so it can be resent.
 
 ### Join Codes
 
-A project's owner can make a join code on its People panel: 8 characters
-like `K7QM-2XRD` (`projects.join_code`, migration 015). Anyone signed in who
-enters it under Join a project on their Projects page
+A project's owner can make a join code on its People panel ("Or give them a
+code", under the invite link): 8 characters like `K7QM-2XRD`
+(`projects.join_code`, migration 015). It is the fallback to an invite link.
+Anyone signed in who enters it under "I was invited" on their Projects page
 (`POST /api/team/join`) becomes a member who edits, while the project has
 room; no email is needed. Entering it on the `/join` page, or opening
 `/app#/join/<code>`, leads to that form with the code filled in (after
@@ -111,7 +112,7 @@ so the people each project may have besides its owner are seats − 1.
 - **People per project**: members plus invitations still open. Each extra
   seat (paid, from a promo code, or free from staff: `teams.free_seats`)
   adds one more person to every project of that owner.
-- **Viewers per project: 5** (`Plans.ViewersPerProject`), from view links,
+- **Viewers per project: 5** (`Plans.ViewersPerProject`), from watch-only links,
   separate from the people above (§4).
 - Until 1.0.0 everyone is on **Beta tester** (`Plans.Open` is false while
   `ServerInfo.Version` is below 1.0); plan, seat and storage changes are
@@ -119,21 +120,61 @@ so the people each project may have besides its owner are seats − 1.
 - Moving to a smaller plan keeps everyone: missing seats become extra seats.
   It is refused if the owner's projects wouldn't fit even then.
 
-## 4. View Links
+## 4. Invite Links
 
-A view link downloads one project, ready to open in Godot, for someone to
-watch it being made: a playtester, a friend. They need no account and see
-every change live, but can't change anything: the invite codes a view link
-makes open the project read-only (`IProjectStore.CodeIsViewOnlyAsync`;
-`AccessGate` gives them a read-only grant). Codes made on the admin page
-still edit.
+An invite link downloads one project, ready to open in Godot
+(`download_links`, with `access` from migration 030). The owner picks one
+of two kinds when making it (`POST /api/team/projects/{id}/links`
+`{maxUses, hours, label, access}`):
 
-- The owner says how many people a link lets in (1 to the viewer places
-  left) and for how long. A link holds its places until it is turned off:
-  one per download so far and, while it works, one per download left
+- **Watch-only** (`view`, the default and every link made before 030): for
+  a playtester or a friend. They need no account and see every change live,
+  but can't change anything: the invite codes it makes open the project
+  read-only (`IProjectStore.CodeIsViewOnlyAsync`; `AccessGate` gives them a
+  read-only grant). Codes made on the admin page still edit.
+- **Can edit** (`edit`): for a teammate. Each download carries a join
+  ticket instead of an invite code. The ticket opens nothing by itself:
+  after signing in, the add-on sends it (`POST /api/team/join-ticket
+  {ticket}`), and that account becomes a member who edits.
+
+Places:
+
+- A watch-only link holds viewer places (5 per project) until it is turned
+  off: one per download so far and, while it works, one per download left
   (`TeamStore.ViewersAsync`).
-- Turning a link off (or removing it) frees its places and turns off every
-  code it made.
+- An edit link holds places among the project's people, counted with
+  members and open invitations: one per download left while it works, and
+  one per ticket downloaded but not used yet, until the ticket runs out
+  (`TeamStore.EditHoldsAsync`). A used ticket is a member and counts as one.
+  The link can let in at most as many people as there is room for.
+- Turning a link off (or removing it) frees its places. A watch-only link
+  also turns off every code it made. An edit link's unused tickets stop
+  working; people who already joined stay members, and the owner removes
+  them one by one.
+
+Join tickets (`join_tickets`, `Teams/JoinTickets.cs`):
+
+- 256 random bits, kept only as a SHA-256 hash, valid for 30 days.
+- Redeeming applies the same checks and words as a join code: room in the
+  project, not archived, an owner. Plus: a ticket someone else already used
+  is refused; one that ran out, or whose link was turned off, too.
+- The same account may send its ticket again; it gets "already in".
+  Someone already in the project gets "already in" with any ticket.
+- No confirmed email is needed, as with join codes and email invitation
+  links.
+- The owner gets an email, and the audit log a `project.joined` entry.
+- Someone already in a project can download it ready for Godot
+  (`POST /api/team/projects/{id}/starter`). That starter's ticket was made
+  for their account (`user_id`), holds no place, and only that account can
+  use it. Accepting an invitation returns the project's id, so the page can
+  offer this download next.
+
+Edit links are only offered once the released add-on reads tickets (the
+first one with `ui/first_run.gd`, `AddonStore.ReadsTickets`). An older
+add-on deletes a `join.cfg` it can't use and shows the usual sign-in, so a
+ticket would leave the person outside the project. Until then making an
+edit link is refused with "give them the join code", and a member's own
+starter carries no ticket.
 
 More about how the download works in [onboarding.md](onboarding.md) §3.
 
@@ -144,7 +185,7 @@ More about how the download works in [onboarding.md](onboarding.md) §3.
 | Owner | Everything about it. Always edits. |
 | Member, can edit | Works in it: edits, chats, comments. Can leave. |
 | Member, can view | Sees everything, chats and comments; every change is refused. |
-| Viewer (view link) | Watches in Godot. Every change is refused. |
+| Viewer (watch-only link) | Watches in Godot. Every change is refused. |
 
 A sign-in only opens projects the person owns or is a member of
 (`EditorTokens`, from `TeamStore.ProjectsForAsync`), and view access refuses
@@ -173,7 +214,8 @@ The panel signs in through the website ([authentication.md](authentication.md)
 (`GET /api/editor/projects`: their own and the ones they were invited to, with
 their role, the owner's name and the owner's storage). Clicking one connects
 the folder to it. For the connected project the panel shows who is in it; its
-owner can invite people there and withdraw invitations, and copy a view link.
+owner can invite people there (`ui/invite_dialog.gd`: an invite link that
+lets them edit or only watch, the code, or an email).
 Someone who can make projects can make one from the folder.
 
 - The connection is the account: the server sets the member id and name
@@ -192,12 +234,17 @@ and this site's `Origin` ([security.md](security.md) §4).
 - `GET /api/dashboard`: the person, their plan (if they can make projects)
   with usage, every project they can open with its people, limits and real
   statistics (files, bytes, changes, changes per day for 30 days, the latest
-  activity with the editor's name), invitations and view links for the ones
-  they own, invitations to them, and who is connected. Statistics are cached
+  activity with the editor's name), invitations and invite links for the ones
+  they own, invitations to them, and who is connected. Per project also
+  `inGodot` (this account has connected to it from Godot, from
+  `session_log`; the website's first steps are done then) and `held` (places
+  edit links hold); at the top `editLinks` (edit links can be made, §4) and
+  `oldestGodot` (the oldest Godot the released add-on runs on). Statistics are cached
   for 5 seconds per person.
 - The owner's plan: `POST /api/team {code}` (start owning), `/team/plan`,
   `/team/seats`, `/team/storage`, `/team/promo`.
-- A project, owner only: `/team/projects/{id}/rename|archive|delete|links|transfer`,
+- A project, owner only: `/team/projects/{id}/rename|archive|delete|links|transfer`
+  (`links` takes `access`: `view` or `edit`, §4),
   `/team/projects/{id}/invites`, `.../invites/{inviteId}/resend|cancel`,
   `/team/projects/{id}/members/{userId}/remove|access`,
   `/team/projects/{id}/image` (PNG, JPEG or WebP body, up to 2 MB, told apart
@@ -207,10 +254,14 @@ and this site's `Origin` ([security.md](security.md) §4).
   website shows `public/media/project-default-wide.png`),
   `GET /team/projects/{id}/activity?who=` (the latest 200 changes, optionally
   by one person, and who made changes), `POST /team/projects/{id}/leave`
-  (members).
+  (members), `POST /team/projects/{id}/starter` (the project ready for Godot,
+  with a ticket for this account, §4).
+- Joining: `/team/join {code}` (a join code), `/team/join-ticket {ticket}`
+  (a ticket from a starter project, §4).
 - New projects (anyone who can make them): `/team/projects`,
   `/team/projects/import?name=` (zip body).
-- Invitations: `/invitations/{id}/accept|decline`; the email's link:
+- Invitations: `/invitations/{id}/accept|decline` (accepting returns the
+  project's `id`); the email's link:
   `GET /invitations/by-token/{token}` (no sign-in), `POST .../accept`
   (signed in), `POST .../decline`.
 

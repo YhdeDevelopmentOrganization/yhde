@@ -15,7 +15,9 @@ export type PendingInvite = { id: string; email: string; sent: string; expires: 
 export type Invitation = { id: string; projectId: string; project: string; from: string; fromEmail: string; to: string; sent: string }
 // The invitation an email's link opens (GET /api/invitations/by-token/{token}).
 export type TokenInvitation = { project: string; from: string; fromEmail: string; to: string; sent: string; signedInAs: string | null }
-export type Link = { id: string; label: string; created: string; expires: string | null; maxUses: number | null; uses: number; revoked: boolean }
+// An invite link: "edit" lets people in as members (each download carries a
+// join ticket), "view" only lets them watch (teams.md §4).
+export type Link = { id: string; label: string; created: string; expires: string | null; maxUses: number | null; uses: number; revoked: boolean; access: Access }
 export type Activity = { id: string; at: string; who: string; whoId?: string | null; kind: string; path: string; text: string }
 export type Project = {
   id: string
@@ -30,6 +32,7 @@ export type Project = {
   image: string | null // address of the project's own image, if it has one
   role: "owner" | "member"
   myAccess: Access
+  inGodot: boolean // this account has opened it in Godot at least once
   owner: { id: string; name: string } | null
   members: Member[] // the owner first
   peopleLimit: number // people besides the owner (members and open invitations)
@@ -38,6 +41,7 @@ export type Project = {
   invites: PendingInvite[] // the owner's view only
   links: Link[] // the owner's view only
   joinCode: string | null // the owner's view only: anyone who enters it joins as a developer
+  held: number // the owner's view only: places edit links hold
 }
 
 // The picture for a project: its own, or the YHDE "No image yet" one
@@ -70,6 +74,8 @@ export type State = {
   invitations: Invitation[]
   presence: Presence[]
   teamsNeedCode?: boolean // making projects needs an access code
+  editLinks?: boolean // invite links that let people edit can be made
+  oldestGodot?: string // the oldest Godot the add-on runs on, e.g. "4.7"
 }
 
 // What an operation did, in words (OperationType.cs).
@@ -191,7 +197,7 @@ export function planUsage(plan: MyPlan) {
 
 // People in a project besides its owner: members and invitations still open.
 export function projectSeats(p: Project) {
-  const used = p.members.filter((m) => m.role === "member").length + p.invites.filter((i) => !i.expired).length
+  const used = p.members.filter((m) => m.role === "member").length + p.invites.filter((i) => !i.expired).length + (p.held ?? 0)
   return { used, free: Math.max(0, p.peopleLimit - used), limit: p.peopleLimit }
 }
 
@@ -224,8 +230,25 @@ export const api = {
   removeProjectImage: (id: string) => post(`${P(id)}/image/remove`),
   archiveProject: (id: string, archived: boolean) => post(`${P(id)}/archive`, { archived }),
   deleteProject: (id: string, typed: string) => post(`${P(id)}/delete`, { name: typed }),
-  async createLink(projectId: string, input: { label: string; hours: number | null; maxUses: number }) {
+  async createLink(projectId: string, input: { label: string; hours: number | null; maxUses: number; access?: Access }) {
     return (await post<{ url: string }>(`${P(projectId)}/links`, input)).url
+  },
+  // The project ready to open in Godot, with a join ticket for this account.
+  async downloadStarter(projectId: string, name: string) {
+    let res: Response
+    try {
+      res = await fetch(`/api${P(projectId)}/starter`, { method: "POST", credentials: "same-origin", headers: { "X-YHDE": "1" } })
+    } catch {
+      throw new ApiError("Can't reach the server. Check your connection and try again.", 0)
+    }
+    if (!res.ok) throw new ApiError((await res.json().catch(() => ({}))).detail || "Something went wrong. Try again.", res.status)
+    const file = /filename="?([^";]+)"?/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? `${name}.zip`
+    const url = URL.createObjectURL(await res.blob())
+    const a = document.createElement("a")
+    a.href = url
+    a.download = file
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
   },
   revokeLink: (linkId: string) => post(`/team/links/${linkId}/revoke`),
   deleteLink: (linkId: string) => post(`/team/links/${linkId}/delete`),

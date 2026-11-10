@@ -78,10 +78,14 @@ public static class AuthEndpoints
         api.MapGet("/me", async (HttpContext ctx, AccountStore store, CancellationToken ct) =>
             await CurrentAsync(ctx, store, ct) is { } s ? Results.Ok(await MeAsync(store, s.User, ct)) : Results.Problem("Not signed in.", statusCode: 401));
 
-        api.MapPost("/verify", async (TokenRequest r, AccountService accounts, CancellationToken ct) =>
-            await accounts.VerifyAsync(r.Token, ct)
-                ? Results.Ok(new { ok = true })
-                : Results.Problem("This link has expired or was already used. Sign in and ask for a new one.", statusCode: 400));
+        // Confirms the address and signs that account in on this browser.
+        api.MapPost("/verify", async (TokenRequest r, HttpContext ctx, AccountService accounts, AccountStore store, CancellationToken ct) =>
+        {
+            if (await accounts.ConfirmAsync(r.Token, ct) is not { } user)
+                return Results.Problem("This link has expired or was already used. Sign in and ask for a new one.", statusCode: 400);
+            if (!user.Disabled) await SignInAsync(ctx, store, user, ct);
+            return Results.Ok(new { ok = true });
+        });
 
         api.MapPost("/verify/resend", async (HttpContext ctx, AccountStore store, AccountService accounts, AccountOptions options, CancellationToken ct) =>
         {

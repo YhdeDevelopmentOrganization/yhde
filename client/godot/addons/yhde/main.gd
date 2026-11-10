@@ -20,6 +20,8 @@ const PresenceMarks := preload("res://addons/yhde/ui/presence_marks.gd")
 const CodeCarets := preload("res://addons/yhde/ui/code_carets.gd")
 const Updater := preload("res://addons/yhde/ui/updater.gd")
 const Account := preload("res://addons/yhde/ui/account.gd")
+const FirstRun := preload("res://addons/yhde/ui/first_run.gd")
+const InviteDialog := preload("res://addons/yhde/ui/invite_dialog.gd")
 
 ## YHDE's server. Everyone uses it; there is nothing to type. YHDE_SERVER
 ## (an environment variable) points the editor at another one, for development.
@@ -94,6 +96,7 @@ var options := OPTIONS.duplicate()
 var marks := PresenceMarks.new()
 var updater: Node
 var account: Node # ui/account.gd
+var first_run: VBoxContainer # ui/first_run.gd: one next step until the folder is live
 var _view_only := false # connected to a project we may only look at
 var _marks_refresh := 0.0
 var _script_scan := 0.0
@@ -122,12 +125,13 @@ func enter() -> void:
 	top_bar = TopBar.new()
 	plugin.add_control_to_container(EditorPlugin.CONTAINER_TOOLBAR, top_bar)
 	top_bar.status_pressed.connect(func() -> void: dock.make_visible())
+	first_run = FirstRun.new()
+	panel.add_first_run(first_run)
 
 	if not ClassDB.class_exists("YhdeSession"):
-		var file := "libyhde.%s.editor.%s" % [OS.get_name().to_lower(), Engine.get_architecture_name()]
-		panel.set_native_missing(
-			"YHDE's native core is missing for this computer (%s, %s)." % [OS.get_name(), Engine.get_architecture_name()],
-			"Put the file for your system (%s…) into addons/yhde/bin/ and restart the editor. Get it by downloading the YHDE add-on again." % file)
+		push_warning("YHDE: addons/yhde/bin/libyhde.%s.editor.%s is missing." % [OS.get_name().to_lower(), Engine.get_architecture_name()])
+		first_run.show_broken(self, "YHDE can't start on this computer (%s, %s): a file is missing from it. Download YHDE again, put it in this project, and restart Godot." % [OS.get_name(), Engine.get_architecture_name()])
+		dock.make_visible.call_deferred()
 		return
 
 	session = ClassDB.instantiate("YhdeSession")
@@ -171,12 +175,18 @@ func enter() -> void:
 	plugin.add_child(account)
 	account.setup(http_base(server_url()))
 	account.changed.connect(_refresh_account)
+	account.changed.connect(func() -> void: first_run.account_changed())
 	account.waiting.connect(func(code: String, _url: String) -> void:
 		panel.set_problem("")
 		panel.set_waiting(code))
 	account.problem.connect(func(text: String) -> void:
 		panel.set_waiting("")
-		panel.set_problem(text))
+		if first_run.active:
+			first_run.show_problem(text)
+		else:
+			panel.set_problem(text))
+	panel.invite_people_requested.connect(func(project_id: String, project_name: String) -> void:
+		InviteDialog.new().open(account, project_id, project_name))
 	panel.sign_in_requested.connect(func() -> void: account.sign_in())
 	panel.sign_in_cancelled.connect(func() -> void:
 		account.cancel()
@@ -256,6 +266,9 @@ func enter() -> void:
 	follow.session = session
 
 	_take_join_file()
+	first_run.setup(self)
+	if first_run.active:
+		dock.make_visible.call_deferred()
 	var settings := _load_settings()
 	for key in OPTIONS:
 		options[key] = EditorInterface.get_editor_settings().get_project_metadata(META, "show_" + key, OPTIONS[key])
@@ -368,8 +381,10 @@ func _load_settings() -> Dictionary:
 
 
 ## A starter project from the server's join page carries the server address
-## and invite code in addons/yhde/join.cfg: store them (the code outside the
-## project, like a sign-in), delete the file and offer to join.
+## and an invite code (watch-only links) or a join ticket (edit links, a
+## member's own download) in addons/yhde/join.cfg, with the game's and the
+## owner's names. The code or ticket is kept outside the project (like a
+## sign-in), the file is deleted, and the first-run view offers Join.
 func _take_join_file() -> void:
 	if not FileAccess.file_exists(JOIN_FILE):
 		return
@@ -380,13 +395,31 @@ func _take_join_file() -> void:
 		return
 	var url := str(cfg.get_value("join", "url", ""))
 	var code := str(cfg.get_value("join", "code", ""))
-	if url == "" or code == "":
+	var ticket := str(cfg.get_value("join", "ticket", ""))
+	if url == "" or (code == "" and ticket == ""):
 		return
-	_save_setting("invite_url", url)
 	_save_setting("auto_connect", false)
-	session.set_access_key(url, code)
-	panel.set_notice("Welcome! Sign in to see your team's projects, or press \"Join with the invite in this project\". The game downloads when you connect.")
-	dock.make_visible.call_deferred()
+	var invite := {"project": str(cfg.get_value("join", "project", "")), "from": str(cfg.get_value("join", "from", ""))}
+	if code != "":
+		_save_setting("invite_url", url)
+		session.set_access_key(url, code)
+		invite.kind = "code"
+	elif Account.host_of(url) == Account.host_of(server_url()):
+		# A ticket is used by the signed-in account, on YHDE's server.
+		account.save_ticket(folder_key(), ticket)
+		invite.kind = "ticket"
+	if invite.has("kind"):
+		account.save_invite(folder_key(), invite)
+
+
+## Which folder this is, for things kept outside it (a join ticket).
+static func folder_key() -> String:
+	return ProjectSettings.globalize_path("res://")
+
+
+## https://host of YHDE's server.
+static func account_base() -> String:
+	return http_base(server_url())
 
 
 func _save_setting(key: String, value: Variant) -> void:
@@ -459,7 +492,7 @@ func _connect_account(p: Dictionary) -> void:
 	_save_setting("via", "account")
 	_view_only = str(p.get("access", "edit")) == "view"
 	_save_setting("access", str(p.get("access", "edit")))
-	panel.set_project(str(p.get("name", "")))
+	panel.set_project(str(p.get("name", "")), str(p.get("id", "")))
 	_connect_with(settings)
 	# The server knows us by our account.
 	social.me = str(account.user.get("id", social.me))

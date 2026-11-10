@@ -76,12 +76,17 @@ public sealed class AccountService(AccountStore store, IEmailSender email, ILogg
             $"Hi {user.Name},\n\nConfirm your email address to finish setting up your YHDE account:\n{baseUrl}/app#/verify?token={token}\n\nThe link works for 2 days. If you didn't sign up, ignore this email.", ct);
     }
 
-    public async Task<bool> VerifyAsync(string? token, CancellationToken ct)
+    public async Task<bool> VerifyAsync(string? token, CancellationToken ct) => await ConfirmAsync(token, ct) is not null;
+
+    // Confirms the address with the email's link and gives back the account,
+    // which the link then signs in (like a password reset link): someone who
+    // just made an account and opened the link needn't sign in again.
+    public async Task<User?> ConfirmAsync(string? token, CancellationToken ct)
     {
         var userId = await store.UseEmailTokenAsync(token ?? "", "verify", ct);
-        if (userId is null) return false;
+        if (userId is null) return null;
         await store.MarkVerifiedAsync(userId.Value, ct);
-        return true;
+        return await store.ByIdAsync(userId.Value, ct);
     }
 
     // Always answers the same, whether or not the address has an account.

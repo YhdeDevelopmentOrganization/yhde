@@ -39,7 +39,7 @@ soon as something touched that file, the editor sent them back as an
    replace another file at a taken path, the server refuses it with
    `Outdated`. The editor keeps its copy in the replaced files folder and
    takes the current version.
-5. Add-ons older than 0.6.10 may sign in and be told to update, but their
+5. Add-ons older than 0.7.4 may sign in and be told to update, but their
    edits are refused (`UpdateNeeded`).
 6. The server and the editor refuse the same names: also `< > " | ? *` and
    the Windows device names (`CON`, `NUL`, `COM1`...) with any extension.
@@ -62,7 +62,7 @@ soon as something touched that file, the editor sent them back as an
   The panel says so; nothing is lost on either side.
 - The editor's file record (`*.assets.json`) is version 2. Version 1 is read; an
   older add-on cannot read version 2 and treats the folder as new.
-- Everyone has to update to 0.6.10 to keep editing.
+- Everyone has to update to 0.7.4 to keep editing.
 
 ## Alternatives
 

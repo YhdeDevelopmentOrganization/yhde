@@ -416,9 +416,31 @@ public sealed class TeamStore(Database db)
             """
             SELECT l.project_id, SUM(l.uses + CASE WHEN l.max_uses IS NOT NULL AND (l.expires_at IS NULL OR l.expires_at > NOW())
                                                  THEN GREATEST(l.max_uses - l.uses, 0) ELSE 0 END)::int
-            FROM download_links l WHERE l.project_id = ANY(@ids) AND l.revoked_at IS NULL GROUP BY 1
+            FROM download_links l WHERE l.project_id = ANY(@ids) AND l.access = 'view' AND l.revoked_at IS NULL GROUP BY 1
             """, new { ids = projectIds.ToArray() }, cancellationToken: ct));
         return rows.ToDictionary(r => r.Id, r => r.N);
+    }
+
+    // The people places edit links hold, per project, the way view links hold
+    // viewer places (ViewersAsync): while a link works, one per
+    // download it has left; and one per ticket downloaded but not used yet,
+    // until the ticket runs out. A used ticket is a member, counted as one.
+    public async Task<Dictionary<Guid, int>> EditHoldsAsync(IReadOnlyList<Guid> projectIds, CancellationToken ct)
+    {
+        if (projectIds.Count == 0) return [];
+        await using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<(Guid Id, int N)>(new CommandDefinition(
+            """
+            SELECT l.project_id,
+                   SUM(CASE WHEN l.max_uses IS NOT NULL AND (l.expires_at IS NULL OR l.expires_at > NOW())
+                            THEN GREATEST(l.max_uses - l.uses, 0) ELSE 0 END
+                       + (SELECT COUNT(*) FROM join_tickets t
+                          WHERE t.link_id = l.link_id AND t.redeemed_at IS NULL AND t.expires_at > NOW()))::int
+            FROM download_links l
+            WHERE l.project_id = ANY(@ids) AND l.access = 'edit' AND l.revoked_at IS NULL
+            GROUP BY 1
+            """, new { ids = projectIds.ToArray() }, cancellationToken: ct));
+        return rows.Where(r => r.N > 0).ToDictionary(r => r.Id, r => r.N);
     }
 
     // Turning a view link off also cuts off everyone who downloaded with it.
@@ -564,6 +586,18 @@ public sealed class TeamStore(Database db)
             ORDER BY o.created_at DESC
             """, new { ids = projectIds.ToArray(), perProject }, cancellationToken: ct));
         return rows.Select(r => new ActivityRow(r.project_id, r.op_id, r.type, Utc(r.created_at), r.path, r.name)).ToList();
+    }
+
+    // The projects this account has opened in Godot at least once (the
+    // website's first steps are done then).
+    public async Task<HashSet<Guid>> OpenedInGodotAsync(Guid userId, IReadOnlyList<Guid> projectIds, CancellationToken ct)
+    {
+        if (projectIds.Count == 0) return [];
+        await using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<Guid>(new CommandDefinition(
+            "SELECT DISTINCT project_id FROM session_log WHERE project_id = ANY(@ids) AND member_id = @userId",
+            new { ids = projectIds.ToArray(), userId }, cancellationToken: ct));
+        return rows.ToHashSet();
     }
 
     public async Task<Dictionary<Guid, DateTimeOffset>> SessionStartsAsync(IReadOnlyList<Guid> sessionIds, CancellationToken ct)

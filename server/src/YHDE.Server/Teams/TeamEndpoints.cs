@@ -38,7 +38,8 @@ public static class TeamEndpoints
     public sealed record CountRequest(int Count);
     public sealed record EmailRequest(string? Email);
     public sealed record ArchiveRequest(bool Archived);
-    public sealed record LinkRequest(string? Label, int? Hours, int? MaxUses);
+    public sealed record LinkRequest(string? Label, int? Hours, int? MaxUses, string? Access = null);
+    public sealed record TicketRequest(string? Ticket);
     public sealed record CodeRequest(string? Code);
     public sealed record AccessRequest(string? Access);
     public sealed record TransferRequest(Guid UserId);
@@ -59,6 +60,9 @@ public static class TeamEndpoints
     // Promo codes can't be guessed: a few tries per account and per address.
     private static readonly Limiter CodeTries = new(5, TimeSpan.FromHours(1));
     private static readonly Limiter CodeTriesByAddress = new(20, TimeSpan.FromHours(1));
+    // Tickets can't be guessed either (256 bits); the editor may retry a few times.
+    private static readonly Limiter TicketTries = new(20, TimeSpan.FromHours(1));
+    private static readonly Limiter TicketTriesByAddress = new(60, TimeSpan.FromHours(1));
 
     public static bool TeamsNeedCode(IConfiguration config) => config.GetValue("Yhde:TeamsNeedCode", false);
 
@@ -125,7 +129,8 @@ public static class TeamEndpoints
         });
 
         api.MapGet("/dashboard", async (HttpContext ctx, AccountStore accounts, TeamStore teams, IProjectStore projects,
-            ISessionManager sessions, PresenceService presence, PromoStore promos, IConfiguration config, CancellationToken ct) =>
+            ISessionManager sessions, PresenceService presence, PromoStore promos, IConfiguration config, YHDE.Server.Addon.AddonStore addon,
+            CancellationToken ct) =>
         {
             var user = await SignedInAsync(ctx, accounts, ct);
             Limit(Reads, user.Id.ToString(), "Too many requests. Wait a minute.");
@@ -144,6 +149,7 @@ public static class TeamEndpoints
             var members = await teams.MembersOfAsync(ids, ct);
             var invites = await teams.InvitesOfAsync(ownIds, ct, withExpired: true);
             var viewers = await teams.ViewersAsync(ids, ct);
+            var opened = await teams.OpenedInGodotAsync(user.Id, ids, ct);
             // Each project's limits come from its owner's plan.
             var plans = new Dictionary<Guid, Team>();
             foreach (var teamId in mine.Select(m => m.TeamId).Distinct())
@@ -181,6 +187,8 @@ public static class TeamEndpoints
                     image = images.TryGetValue(id, out var imageAt) ? $"/api/team/projects/{id}/image?v={imageAt.ToUnixTimeMilliseconds()}" : null,
                     role = m.Role,
                     myAccess = m.Access,
+                    // This account has opened it in Godot (the first steps are done).
+                    inGodot = opened.Contains(id),
                     owner = owner is null ? null : new { id = owner.UserId, name = owner.Name },
                     members = people.Select(x => new { id = x.UserId, name = x.Name, email = x.Email, role = x.Role, access = x.Access, joined = x.Joined, lastSeen = x.LastSeen }),
                     peopleLimit = plans.TryGetValue(m.TeamId, out var plan) ? plan.PeoplePerProject : 0,
@@ -199,7 +207,10 @@ public static class TeamEndpoints
                         maxUses = l.MaxUses,
                         uses = l.Uses,
                         revoked = l.RevokedAt is not null,
+                        access = l.Access,
                     }),
+                    // Places edit links hold (counted with the people above).
+                    held = own ? (await teams.EditHoldsAsync([id], ct)).GetValueOrDefault(id) : 0,
                 });
             }
 
@@ -242,6 +253,10 @@ public static class TeamEndpoints
                 invitations,
                 presence = online,
                 teamsNeedCode = TeamsNeedCode(config),
+                // Invite links that let people edit can be made (teams.md §4).
+                editLinks = addon.ReadsTickets,
+                // The oldest Godot the released add-on runs on, for the steps.
+                oldestGodot = addon.OldestGodot,
                 // The Godot add-on 0.4 reads these; newer ones use plan and projects.
                 team = owned is { } ot ? new { id = ot.Id, name = user.Name, plan = ot.PlanInfo.Id, role = "owner" } : null,
                 members = Array.Empty<object>(),
@@ -464,6 +479,47 @@ public static class TeamEndpoints
             return Results.Ok(new { id = projectId, name = project.Name, already = false });
         });
 
+        // A join ticket from a starter project (teams.md §4): the editor sends
+        // it once signed in, and the account joins the project as a member
+        // who edits. Same checks as a join code. Redeeming one's own ticket
+        // again is fine (the editor may retry); another account's is refused.
+        api.MapPost("/team/join-ticket", async (TicketRequest r, HttpContext ctx, AccountStore accounts, TeamStore teams, IProjectStore projects,
+            JoinTicketStore tickets, EditorTokens editors, IEmailSender mail, StaffStore staff, CancellationToken ct) =>
+        {
+            var user = await SignedInAsync(ctx, accounts, ct);
+            const string tooMany = "Too many tries. Wait an hour and try again.";
+            Limit(TicketTries, user.Id.ToString(), tooMany);
+            Limit(TicketTriesByAddress, ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown", tooMany);
+            var joined = await JoinTicketRedeemer.RedeemAsync(teams, tickets, projects, user, r.Ticket, ct);
+            if (!joined.Already)
+            {
+                editors.Forget(); // their editor can open it at once
+                await staff.WriteAsync("project.joined", user.Id, new { via = "link" }, projectId: joined.ProjectId, ct: ct);
+                if (joined.OwnerEmail is { } to)
+                    await NotifyAsync(mail, to, $"{user.Name} joined {joined.Name}",
+                        $"Hi,\n\n{user.Name} ({user.Email}) joined your project {joined.Name} on YHDE with an invite link. You can remove them on the project's page.", ct);
+            }
+            var branch = (await projects.GetAsync(joined.ProjectId, ct))?.MainBranchId;
+            return Results.Ok(new { id = joined.ProjectId, name = joined.Name, branchId = branch, access = joined.Access, already = joined.Already });
+        });
+
+        // Someone in a project downloads it ready for Godot: the starter
+        // project with a ticket only their account can use, so the YHDE panel
+        // opens it straight after signing in.
+        api.MapPost("/team/projects/{id:guid}/starter", async (Guid id, HttpContext ctx, AccountStore accounts, TeamStore teams,
+            IProjectStore projects, JoinTicketStore tickets, YHDE.Server.Addon.AddonStore addon, CancellationToken ct) =>
+        {
+            var x = await ProjectAsync(ctx, accounts, teams, projects, id, ownerOnly: false, ct);
+            if (x.Project.ArchivedAt is not null) throw No("The project is archived: restore it first.", 409);
+            if (addon.Current is null) throw No("The YHDE add-on isn't available on this server yet.", 503);
+            Limit(NewLinks, x.User.Id.ToString(), "You've downloaded a lot in a short time. Wait an hour and try again.");
+            var owner = (await teams.MembersAsync(id, ct)).FirstOrDefault(m => m.Role == "owner");
+            // An add-on that can't read tickets gets none; its panel lists the project after sign-in anyway.
+            var ticket = addon.ReadsTickets ? await tickets.CreateAsync(id, null, x.User.Id, ct) : null;
+            return YHDE.Server.Addon.AddonEndpoints.Starter(ctx, addon, x.Project,
+                new YHDE.Server.Addon.JoinFile(Ticket: ticket, Project: x.Project.Name, From: owner?.UserId == x.User.Id ? null : owner?.Name));
+        });
+
         api.MapPost("/team/projects/{id:guid}/members/{userId:guid}/remove", async (Guid id, Guid userId, HttpContext ctx, AccountStore accounts,
             TeamStore teams, IProjectStore projects, EditorTokens editors, ISessionManager sessions, CancellationToken ct) =>
         {
@@ -553,7 +609,8 @@ public static class TeamEndpoints
             var invitation = (await teams.InvitationsForAsync(user.Email, ct)).FirstOrDefault(i => i.Id == id)
                 ?? throw No("This invitation is no longer open.", 404);
             await JoinAsync(teams, editors, mail, user, invitation, user.Email, ct);
-            return Ok();
+            // The page then offers the project ready for Godot (/team/projects/{id}/starter).
+            return Results.Ok(new { ok = true, id = invitation.ProjectId });
         });
 
         api.MapPost("/invitations/{id:guid}/decline", async (Guid id, HttpContext ctx, AccountStore accounts, TeamStore teams, IEmailSender mail, CancellationToken ct) =>
@@ -583,7 +640,7 @@ public static class TeamEndpoints
             Limit(Writes, user.Id.ToString());
             var i = await teams.InvitationByTokenAsync(token, ct) ?? throw No("This invitation is no longer open.", 404);
             await JoinAsync(teams, editors, mail, user, i, null, ct);
-            return Ok();
+            return Results.Ok(new { ok = true, id = i.ProjectId });
         });
 
         api.MapPost("/invitations/by-token/{token}/decline", async (string token, HttpContext ctx, TeamStore teams, IEmailSender mail, CancellationToken ct) =>
@@ -729,22 +786,36 @@ public static class TeamEndpoints
             return Ok();
         });
 
-        // View links: each lets in a number of people who can open the
-        // project in Godot and watch, never change anything, up to
-        // Plans.ViewersPerProject per project.
+        // Invite links: each lets in a number of people. A watch-only link
+        // ("view") lets them open the project in Godot and watch, never change
+        // anything, up to Plans.ViewersPerProject per project. An edit link
+        // ("edit") holds places among the project's people; each download
+        // carries a join ticket that makes the account using it a member.
         api.MapPost("/team/projects/{id:guid}/links", async (Guid id, LinkRequest r, HttpContext ctx, AccountStore accounts, TeamStore teams,
-            IProjectStore projects, AccountOptions options, CancellationToken ct) =>
+            IProjectStore projects, AccountOptions options, YHDE.Server.Addon.AddonStore addon, CancellationToken ct) =>
         {
             var x = await ProjectAsync(ctx, accounts, teams, projects, id, ownerOnly: true, ct);
             if (x.Project.ArchivedAt is not null) throw No("The project is archived: restore it first.", 409);
             if (r.Hours is < 0 or > 24 * 365) throw No("A link lasts up to a year.");
+            var access = r.Access ?? "view";
+            if (access is not ("view" or "edit")) throw No("A link lets people edit or only watch.");
             Limit(NewLinks, x.User.Id.ToString(), "You've made a lot of links in a short time. Wait an hour and try again.");
-            var free = Plans.ViewersPerProject - (await teams.ViewersAsync([id], ct)).GetValueOrDefault(id);
-            if (free <= 0) throw No($"A project has room for {Plans.ViewersPerProject} viewers, and view links already hold them all. Turn one off to make room.", 409);
             if (r.MaxUses is not { } uses || uses < 1) throw No("Say how many people the link lets in.");
-            if (uses > free) throw No($"There's room for {free} more {(free == 1 ? "viewer" : "viewers")} in this project.", 409);
+            if (access == "edit")
+            {
+                if (!addon.ReadsTickets) throw No("Links that let people edit work once the next YHDE add-on is out. Until then, give them the join code.", 409);
+                var free = x.Plan.PeoplePerProject - await PeopleInAsync(teams, id, ct);
+                if (free <= 0) throw No(FullMessage(x.Plan, x.Project.Name), 409);
+                if (uses > free) throw No($"There's room for {free} more {(free == 1 ? "person" : "people")} in {x.Project.Name}.", 409);
+            }
+            else
+            {
+                var free = Plans.ViewersPerProject - (await teams.ViewersAsync([id], ct)).GetValueOrDefault(id);
+                if (free <= 0) throw No($"A project has room for {Plans.ViewersPerProject} viewers, and watch-only links already hold them all. Turn one off to make room.", 409);
+                if (uses > free) throw No($"There's room for {free} more {(free == 1 ? "viewer" : "viewers")} in this project.", 409);
+            }
             DateTimeOffset? expires = r.Hours is > 0 and var h ? DateTimeOffset.UtcNow.AddHours(h) : null;
-            var (_, token) = await projects.CreateLinkAsync(id, NameRules.Clean(r.Label, NameRules.Kind.Label), expires, uses, ct);
+            var (_, token) = await projects.CreateLinkAsync(id, NameRules.Clean(r.Label, NameRules.Kind.Label), expires, uses, ct, access);
             // The only time the token exists outside the link that is sent.
             return Results.Ok(new { url = $"{options.BaseUrl(ctx.Request)}/join/{token}" });
         });
@@ -889,8 +960,10 @@ public static class TeamEndpoints
     }
 
     // People in a project besides its owner: members and invitations still open.
+    // Members, invitations still open, and the places edit links hold.
     private static async Task<int> PeopleInAsync(TeamStore teams, Guid projectId, CancellationToken ct) =>
-        (await teams.MembersAsync(projectId, ct)).Count(m => m.Role == "member") + (await teams.InvitesAsync(projectId, ct)).Count;
+        (await teams.MembersAsync(projectId, ct)).Count(m => m.Role == "member") + (await teams.InvitesAsync(projectId, ct)).Count
+        + (await teams.EditHoldsAsync([projectId], ct)).GetValueOrDefault(projectId);
 
     private static async Task<int> MostPeopleAsync(TeamStore teams, IReadOnlyList<Guid> projectIds, CancellationToken ct)
     {

@@ -18,7 +18,7 @@ when the server starts.
 |---|---|---|
 | Log | `projects`, `branches`, `scenes`, `operations` | 001, 003 |
 | Chat and comments | `chat_messages`, `comment_threads`, `comment_messages` | 002 |
-| Projects | `project_invites`, `download_links` | 003, 004 |
+| Projects | `project_invites`, `download_links`, `join_tickets` | 003, 004, 030 |
 | Admin | `audit_log`, `session_log` | 001, 004 |
 | Website | `site_settings`, `site_posts`, `site_media`, `early_access` | 005, 006 |
 | Accounts | `users`, `user_sessions`, `oauth_links`, `email_tokens` | 007 |

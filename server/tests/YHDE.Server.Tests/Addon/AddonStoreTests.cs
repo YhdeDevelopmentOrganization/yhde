@@ -145,6 +145,86 @@ public sealed class AddonStoreTests : IDisposable
     }
 
     [Fact]
+    public void A_starter_lists_every_folder_before_its_files()
+    {
+        // Godot's Project Manager imports a zip directly, but skips every file
+        // in a folder the zip doesn't list (checked on Godot 4.7.2).
+        var store = new AddonStore(_dir);
+        store.Install(Zip(Addon("addons/yhde/")), DateTimeOffset.UnixEpoch);
+        store.Release(DateTimeOffset.UnixEpoch);
+        using var ms = new MemoryStream();
+        store.WriteStarter(ms, "Skyhop", "wss://example.com/ws", "YHDE-AAAA-BBBB-CCCC-DDDD");
+
+        using var zip = new ZipArchive(new MemoryStream(ms.ToArray()), ZipArchiveMode.Read);
+        var seen = new HashSet<string>();
+        foreach (var e in zip.Entries)
+        {
+            var parent = e.FullName.TrimEnd('/');
+            parent = parent.Contains('/') ? parent[..(parent.LastIndexOf('/') + 1)] : "";
+            if (parent.Length > 0) Assert.Contains(parent, seen);
+            if (e.FullName.EndsWith('/')) seen.Add(e.FullName);
+        }
+        Assert.Equal(["Skyhop/", "Skyhop/addons/", "Skyhop/addons/yhde/", "Skyhop/addons/yhde/bin/"], seen.Order());
+        Assert.All(zip.Entries, e => Assert.NotEqual(0, (e.ExternalAttributes >> 16) & 0x1FF));
+    }
+
+    [Fact]
+    public void A_starter_from_an_edit_link_carries_a_ticket_instead_of_a_code()
+    {
+        var store = new AddonStore(_dir);
+        store.Install(Zip(Addon("addons/yhde/")), DateTimeOffset.UnixEpoch);
+        store.Release(DateTimeOffset.UnixEpoch);
+        using var ms = new MemoryStream();
+        store.WriteStarter(ms, "Skyhop", "wss://example.com/ws", new JoinFile(Ticket: "t1", Project: "Skyhop", From: "Alex \"A\""));
+
+        var join = Read(ms.ToArray())["Skyhop/addons/yhde/join.cfg"];
+        Assert.Contains("ticket=\"t1\"", join);
+        Assert.Contains("project=\"Skyhop\"", join);
+        Assert.Contains("from=\"Alex \\\"A\\\"\"", join);
+        Assert.DoesNotContain("code=", join);
+    }
+
+    [Fact]
+    public void Edit_links_wait_for_an_addon_that_reads_tickets()
+    {
+        var store = new AddonStore(_dir);
+        Assert.False(store.ReadsTickets);
+        store.Install(Zip(Addon("addons/yhde/")), DateTimeOffset.UnixEpoch);
+        store.Release(DateTimeOffset.UnixEpoch);
+        Assert.False(store.ReadsTickets);
+        store.Install(Zip([.. Addon("addons/yhde/", "0.7.0"), ("addons/yhde/" + AddonStore.TicketMarker, "@tool\nextends VBoxContainer\n")]), DateTimeOffset.UnixEpoch);
+        Assert.False(store.ReadsTickets, "only the released add-on counts");
+        store.Release(DateTimeOffset.UnixEpoch);
+        Assert.True(store.ReadsTickets);
+    }
+
+    [Fact]
+    public void A_starter_names_no_godot_version()
+    {
+        // Any version there makes every other Godot ask to "change it to 4.x".
+        Assert.DoesNotContain("config/features", AddonStore.ProjectGodot("Skyhop"));
+    }
+
+    [Theory]
+    [InlineData("[configuration]\nentry_symbol = \"yhde_init\"\ncompatibility_minimum = \"4.6\"\n", "4.6")]
+    [InlineData("compatibility_minimum = 4.7.2\n", "4.7")]
+    [InlineData("[configuration]\n", null)]
+    public void The_oldest_godot_is_read_from_the_gdextension(string text, string? oldest) =>
+        Assert.Equal(oldest, AddonStore.CompatibilityMinimum(text));
+
+    [Fact]
+    public void The_join_page_says_which_godot_the_released_addon_needs()
+    {
+        var store = new AddonStore(_dir);
+        Assert.Equal("4.7", store.OldestGodot);
+        store.Install(Zip([.. Addon("addons/yhde/").Where(f => f.Item1 != "addons/yhde/yhde.gdextension"),
+            ("addons/yhde/yhde.gdextension", "[configuration]\ncompatibility_minimum = \"4.6\"\n")]), DateTimeOffset.UnixEpoch);
+        Assert.Equal("4.7", store.OldestGodot);
+        store.Release(DateTimeOffset.UnixEpoch);
+        Assert.Equal("4.6", store.OldestGodot);
+    }
+
+    [Fact]
     public void Platforms_are_read_from_the_native_core_files()
     {
         Assert.Equal(["windows", "linux", "macos"], AddonStore.PlatformsOf([

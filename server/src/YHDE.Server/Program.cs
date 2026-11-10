@@ -70,6 +70,7 @@ builder.Services.AddSingleton<YHDE.Server.Accounts.AccountStore>();
 builder.Services.AddSingleton<YHDE.Server.Accounts.AccountService>();
 builder.Services.AddSingleton<YHDE.Server.Accounts.OAuth>();
 builder.Services.AddSingleton<YHDE.Server.Teams.TeamStore>();
+builder.Services.AddSingleton<YHDE.Server.Teams.JoinTicketStore>();
 builder.Services.AddSingleton<YHDE.Server.Teams.StorageQuota>();
 builder.Services.AddSingleton<YHDE.Server.Accounts.EditorTokens>();
 builder.Services.AddSingleton<YHDE.Server.Teams.PromoStore>();
