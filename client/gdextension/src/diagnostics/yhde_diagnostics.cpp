@@ -238,7 +238,12 @@ String YhdeDiagnostics::exclusion_reason(const String &path) {
 	return yhde::AssetSync::exclusion_reason(path);
 }
 
+void YhdeDiagnostics::stop_after_writes(int64_t count) {
+	yhde::AssetSync::stop_after_writes(count);
+}
+
 void YhdeDiagnostics::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("stop_after_writes", "count"), &YhdeDiagnostics::stop_after_writes);
 	ClassDB::bind_method(D_METHOD("exclusion_reason", "path"), &YhdeDiagnostics::exclusion_reason);
 	ClassDB::bind_method(D_METHOD("may_run_in_editor", "path", "bytes_file"), &YhdeDiagnostics::may_run_in_editor);
 	ClassDB::bind_method(D_METHOD("parse_url", "address"), &YhdeDiagnostics::parse_url);

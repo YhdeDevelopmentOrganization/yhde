@@ -3,10 +3,15 @@ import { OFFICIAL, SITE, operatorName } from "@/world/site"
 import { href } from "../chrome"
 import { PageTop, Prose, WithToc } from "../parts"
 
+// The oldest Godot the add-on runs on (compatibility_minimum in
+// yhde.gdextension; the server's AddonStore.OldestGodot for other pages).
+const GODOT = "4.7"
+
 const TOC = [
   { id: "requirements", label: "What you need" },
-  { id: "owner", label: "Start a team (owner)" },
-  { id: "join", label: "Join a project" },
+  { id: "invited", label: "I was invited" },
+  { id: "start", label: "Start a project" },
+  { id: "share-a-game", label: "Share a game you have" },
   { id: "working", label: "Working together" },
   { id: "offline", label: "Offline and reconnecting" },
   { id: "updates", label: "Updating YHDE" },
@@ -18,7 +23,7 @@ const TOC = [
 export function Docs() {
   return (
     <>
-      <PageTop title="Getting" accent="started" lead="Everything you need to get your team into the same Godot project. It takes a few minutes." />
+      <PageTop title="Getting" accent="started" lead="Get your team into the same Godot project. It takes a few minutes." />
       <WithToc toc={TOC}>
         <Prose>
           {OFFICIAL ? (
@@ -32,63 +37,64 @@ export function Docs() {
                 preload="metadata"
                 aria-label="Setting up YHDE: making an account and a project, inviting a teammate, installing the add-on in Godot and signing in."
               />
-              <figcaption className="mt-3 text-sm text-dim">The whole setup, recorded in Godot 4.7 with YHDE 0.6.8. The steps are below too.</figcaption>
+              <figcaption className="mt-3 text-sm text-dim">Recorded with YHDE 0.6.8, before joining got shorter. The steps below are the current way.</figcaption>
             </figure>
           ) : null}
           <h2 id="requirements">What you need</h2>
           <ul>
             <li>
-              <strong>Godot 4.7 or newer</strong>, on Windows, macOS or Linux, from <a href="https://godotengine.org/download/" rel="noreferrer">godotengine.org</a>.
+              <strong>Godot {GODOT} or newer</strong>, on Windows, macOS or Linux, from <a href="https://godotengine.org/download/" rel="noreferrer">godotengine.org</a>.
             </li>
             <li>An internet connection. YHDE keeps working when it drops for a while.</li>
-            <li>
-              {OFFICIAL
-                ? "A free YHDE account for everyone. Only the owner picks a plan; teammates join free."
-                : "A free account on this server for everyone."}
-            </li>
+            <li>A free {OFFICIAL ? "YHDE account" : "account on this server"}. You make it while joining.</li>
           </ul>
 
-          <h2 id="owner">Start a team (owner)</h2>
+          <h2 id="invited">I was invited</h2>
           <ol>
             <li>
-              {OFFICIAL ? (
-                <>
-                  Pick a plan on the <a href={href("/#plans")}>pricing section</a> and make your account.
-                </>
-              ) : (
-                <>
-                  <a href={href("/app#/start")}>Make your account</a> on this server.
-                </>
-              )}
-            </li>
-            <li>In your dashboard, make a project. Start empty, or upload a zip of your existing Godot project.</li>
-            <li>
-              On the project's page, under <strong>People</strong>, invite your teammates by email. They accept from the email or their dashboard, with a free account.
+              Open the invite link and press <strong>Download</strong>.
             </li>
             <li>
-              Or open a project and press <strong>Make invite link</strong>: the link downloads the game as a ready Godot project. Opening it in a chat
-              preview doesn't use it up.
+              In Godot, press <strong>Import</strong>, pick the zip, then press <strong>Import</strong> again.
+            </li>
+            <li>
+              In the YHDE panel on the right, press <strong>Join</strong>. Sign in or make an account if your browser asks. The game's files arrive.
+            </li>
+          </ol>
+          <p>
+            Got a code instead of a link? Sign in on <a href={href("/app#/projects")}>the YHDE website</a> and type it under{" "}
+            <strong>I was invited</strong>.
+          </p>
+
+          <h2 id="start">Start a project</h2>
+          <ol>
+            <li>
+              <a href={href("/app#/projects")}>Sign in</a> (or make an account), press <strong>Start a project</strong> and name it.
+              {OFFICIAL ? " During the beta this needs an access code from us." : null}
+            </li>
+            <li>
+              Press <strong>Download</strong>, open the zip in Godot with <strong>Import</strong>, and press <strong>Join</strong> in the YHDE panel.
+            </li>
+            <li>
+              Press <strong>Invite people</strong> and send the link. Pick <strong>Can edit</strong> for a teammate, or <strong>Can only watch</strong>{" "}
+              for a playtester. Each link is for one person.
             </li>
           </ol>
 
-          <h2 id="join">Join a project</h2>
+          <h2 id="share-a-game">Share a game you have</h2>
           <ol>
             <li>
-              Get the YHDE add-on: <a href="/addon/yhde-addon.zip">download it</a> (one file, no need to unzip). In Godot, open a new, empty project,
-              go to the <strong>Asset Store</strong> tab at the top, press <strong>Import…</strong>, pick the file and press <strong>Install</strong>.
-              Then turn YHDE on under Project, Project Settings, Plugins.
+              <a href="/addon/yhde-addon.zip">Download YHDE</a>. Open your game in Godot, go to the <strong>Asset Store</strong> tab at the top, press{" "}
+              <strong>Import…</strong>, pick the file and press <strong>Install</strong>. Then turn YHDE on under Project, Project Settings, Plugins.
             </li>
             <li>
-              Open the <strong>YHDE panel</strong>: it is a tab next to the Inspector, or click YHDE's status at the top right of the editor. Press{" "}
-              <strong>Sign in with your browser</strong>. Your browser opens: sign in (or make your free
-              account), check the code matches the one in Godot, and press <strong>Allow</strong>.
+              In the YHDE panel on the right, press <strong>Sign in</strong>, then <strong>Share this game</strong>. Your files go up once.
             </li>
-            <li>Your team's projects show up in the panel. Click one: its files and settings arrive, and you're in.</li>
+            <li>
+              Press <strong>Invite people</strong> and send the link.
+            </li>
           </ol>
-          <p>
-            Your name in Godot is your account's name, so your teammates always know who is who. Got an invite link instead? Open it: it downloads the
-            game with YHDE inside, and the panel offers to join with it.
-          </p>
+          <p>Your name in Godot is your account's name, so your teammates always know who is who.</p>
 
           <h2 id="working">Working together</h2>
           <ul>
@@ -118,15 +124,18 @@ export function Docs() {
           </p>
 
           <h2 id="troubleshooting">Troubleshooting</h2>
-          <h3>“Native core missing” in the YHDE panel</h3>
+          <h3>“YHDE needs Godot {GODOT} or newer”</h3>
           <p>
-            Your Godot is older than 4.7. Install Godot 4.7 or newer and open the project again.
+            Install a newer Godot from <a href="https://godotengine.org/download/" rel="noreferrer">godotengine.org</a> and open the project again. Nothing
+            in your project was changed.
           </p>
+          <h3>“YHDE can't start on this computer”</h3>
+          <p>A file of YHDE is missing. Press <strong>Get YHDE again</strong> in the panel, put it in your project the same way, and restart Godot.</p>
           <h3>Connect doesn't work</h3>
           <ul>
             <li>Check that you're online and that your network allows secure web connections (port 443).</li>
             <li>
-              If the panel says your invite doesn't work, it may have been turned off or used up. Ask the owner for a new link.
+              If your invite link doesn't work, it may have run out, been used or been turned off. Ask the person who sent it for a new one.
             </li>
             <li>
               Check the <a href={href("/status")}>status page</a> to see whether the servers are up.

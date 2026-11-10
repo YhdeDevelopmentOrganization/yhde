@@ -40,7 +40,7 @@ part has its own document with the details; this one links to them.
 
 | Part | Built with | Why |
 |---|---|---|
-| Editor | Godot 4.7, tested on 4.7.2 | The engine teams already use. |
+| Editor | Godot 4.7 and 4.8, tested on 4.7.0, 4.7.2 and 4.8 beta 3 | The engine teams already use. |
 | Native core | GDExtension in C++ | Fast diffing, networking and caching inside the editor without rebuilding Godot. It is not a security measure ([security.md](security.md)). |
 | Server | C# on .NET 10 | Good async I/O, WebSocket and PostgreSQL libraries, one process to run. |
 | Database | PostgreSQL | Transactions, so no stored edit is lost; indexes for the log; JSONB for operation payloads. |

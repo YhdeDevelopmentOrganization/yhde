@@ -138,6 +138,25 @@ public sealed class InMemoryOperationRepository : IOperationRepository
 
     public Task<Operation?> GetLatestAssetOpAsync(Guid branchId, Guid targetId, CancellationToken ct) => Task.FromResult<Operation?>(null);
 
+    public Task<string?> GetCurrentFileHashAsync(Guid branchId, string path, CancellationToken ct)
+    {
+        lock (_gate)
+        {
+            for (var i = _ops.Count - 1; i >= 0; i--)
+            {
+                var op = _ops[i];
+                if (op.BranchId != branchId || !YHDE.Server.Assets.AssetRules.IsAssetOp(op.Type)) continue;
+                using var doc = System.Text.Json.JsonDocument.Parse(op.Payload);
+                var root = doc.RootElement;
+                string? Field(string n) => root.TryGetProperty(n, out var v) ? v.GetString() : null;
+                if (op.Type == OperationType.MoveAsset && Field("f") == path) return Task.FromResult<string?>(null);
+                if (Field("s") != path) continue;
+                return Task.FromResult(op.Type == OperationType.DeleteAsset ? null : Field("h"));
+            }
+        }
+        return Task.FromResult<string?>(null);
+    }
+
     public Task<IReadOnlyList<string>> LivePathsDifferingInCaseAsync(Guid branchId, string path, CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<string>>([]);
 
@@ -274,11 +293,12 @@ public sealed class GatewayResilienceTests : IDisposable
         ClientOpRef = Guid.NewGuid().ToByteArray(),
     };
 
-    private async Task<FakeSocket> ConnectAsync(WebSocketGateway gateway, bool subscribe = true)
+    private async Task<FakeSocket> ConnectAsync(WebSocketGateway gateway, bool subscribe = true, string version = ServerInfo.Version)
     {
         var socket = new FakeSocket();
         _ = Task.Run(() => gateway.HandleAsync(socket, null, AccessGrant.AllProjects, _stop.Token));
         await socket.NextAsync(MessageType.Welcome);
+        socket.Receive(Message(MessageType.Hello, new HelloPayload { ProtocolVersion = Frame.ProtocolVersion, ClientVersion = version }, Channel.System));
         if (subscribe)
         {
             socket.Receive(Message(MessageType.Subscribe, new SubscribePayload { ProjectId = Project.ToByteArray(), BranchId = BranchId.ToByteArray() }));
@@ -315,6 +335,26 @@ public sealed class GatewayResilienceTests : IDisposable
 
         sync.HeadSeq.Should().Be(2);
         sync.TailOps.Select(o => o.Seq).Should().Equal(1, 2);
+    }
+
+    // An add-on older than the server's minimum may look and sign in, but not
+    // change the project (it could still delete files it failed to write).
+    [Theory]
+    [InlineData("0.6.9")]
+    [InlineData("")]
+    public async Task An_older_add_on_cannot_change_the_project(string version)
+    {
+        var (gateway, _, _, _) = Gateway();
+        var socket = await ConnectAsync(gateway, version: version);
+
+        socket.Receive(Message(MessageType.SubmitOp, Submit()));
+        var rejected = Codec.DecodePayload<OpRejectedPayload>((await socket.NextAsync(MessageType.OpRejected)).Payload);
+        rejected.Code.Should().Be("UpdateNeeded");
+        rejected.Reason.Should().Contain("Update");
+
+        socket.Receive(Message(MessageType.UndoRequest, new UndoRequestPayload { RequestId = Guid.NewGuid().ToByteArray(), Kind = "undo", Ops = [Submit()] }));
+        Codec.DecodePayload<ErrorPayload>((await socket.NextAsync(MessageType.Error)).Payload).Code.Should().Be(403);
+        socket.State.Should().Be(WebSocketState.Open);
     }
 
     [Theory]

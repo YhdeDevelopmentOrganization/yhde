@@ -9,6 +9,12 @@ namespace YHDE.Server.Addon;
 
 public sealed record AddonManifest(string Version, string Sha256, long Size, string[] Platforms, DateTimeOffset Uploaded);
 
+// What a starter project's join.cfg says. Code: an invite code (view links,
+// the admin page). Ticket: a join ticket (edit links, a member's own
+// download). Project and From name the game and who invited, for the panel's
+// first words; an add-on that doesn't know them ignores them.
+public sealed record JoinFile(string? Code = null, string? Ticket = null, string? Project = null, string? From = null);
+
 // The YHDE editor add-on this server hands out (onboarding.md): the operator
 // uploads a package on the admin page; the join page gives it to new people
 // (alone, or inside a starter project for an invite code) and editors update
@@ -75,6 +81,85 @@ public sealed class AddonStore
     // Uploaded, waiting for the admin to release it.
     public AddonManifest? Pending { get { lock (_lock) return _pending; } }
     public string PackagePath => Path.Combine(_dir, PackageFile);
+
+    // Whether the released add-on reads join tickets (the first one that does
+    // also has the first-run view, ui/first_run.gd). Until it is released an
+    // older add-on would drop a ticket and leave the person outside the
+    // project, so edit links are not offered (teams.md §4).
+    public bool ReadsTickets
+    {
+        get
+        {
+            var current = Current;
+            if (current is null) return false;
+            lock (_lock)
+            {
+                if (_ticketsFor != current.Sha256)
+                {
+                    try
+                    {
+                        using var package = new ZipArchive(File.OpenRead(PackagePath), ZipArchiveMode.Read);
+                        _readsTickets = package.GetEntry(Prefix + TicketMarker) is not null;
+                    }
+                    catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+                    {
+                        _readsTickets = false;
+                    }
+                    _ticketsFor = current.Sha256;
+                }
+                return _readsTickets;
+            }
+        }
+    }
+
+    public const string TicketMarker = "ui/first_run.gd";
+
+    // The oldest Godot the released add-on runs on (compatibility_minimum in
+    // yhde.gdextension), for the join page's words.
+    // Add-ons before it was read say 4.7.
+    public string OldestGodot
+    {
+        get
+        {
+            var current = Current;
+            if (current is null) return DefaultOldestGodot;
+            lock (_lock)
+            {
+                if (_godotFor != current.Sha256)
+                {
+                    _oldestGodot = DefaultOldestGodot;
+                    try
+                    {
+                        using var package = new ZipArchive(File.OpenRead(PackagePath), ZipArchiveMode.Read);
+                        if (package.GetEntry(Prefix + "yhde.gdextension") is { } e)
+                        {
+                            using var r = new StreamReader(e.Open());
+                            _oldestGodot = CompatibilityMinimum(r.ReadToEnd()) ?? DefaultOldestGodot;
+                        }
+                    }
+                    catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+                    {
+                    }
+                    _godotFor = current.Sha256;
+                }
+                return _oldestGodot;
+            }
+        }
+    }
+
+    public const string DefaultOldestGodot = "4.7";
+    private string? _godotFor;
+    private string _oldestGodot = DefaultOldestGodot;
+
+    // "4.6" from compatibility_minimum = "4.6" (or "4.6.1"); only the major
+    // and minor numbers, which is what Godot's config/features holds.
+    public static string? CompatibilityMinimum(string gdextension)
+    {
+        var m = Regex.Match(gdextension, "^\\s*compatibility_minimum\\s*=\\s*\"?(\\d+)\\.(\\d+)", RegexOptions.Multiline);
+        return m.Success ? $"{m.Groups[1].Value}.{m.Groups[2].Value}" : null;
+    }
+    private string? _ticketsFor;
+    private bool _readsTickets;
 
     // Checks an uploaded zip and stages it (see Release). Returns an error for
     // the person uploading, or null.
@@ -176,23 +261,51 @@ public sealed class AddonStore
 
     // A new person's starting point for one project: an empty Godot project
     // named after the game, with YHDE turned on and a join file that fills in
-    // the server address and invite code on first start (the project's own
-    // files and settings then arrive from the server).
-    public void WriteStarter(Stream output, string projectName, string serverUrl, string inviteCode)
+    // the server address and invite code or ticket on first start (the
+    // project's own files and settings then arrive from the server).
+    public void WriteStarter(Stream output, string projectName, string serverUrl, string inviteCode) =>
+        WriteStarter(output, projectName, serverUrl, new JoinFile(Code: inviteCode));
+
+    public void WriteStarter(Stream output, string projectName, string serverUrl, JoinFile join)
     {
         var folder = FolderName(projectName);
-        using var zip = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true);
-        Add(zip, folder + "/project.godot", Encoding.UTF8.GetBytes(ProjectGodot(projectName)));
-        Add(zip, folder + "/" + Prefix + "join.cfg", Encoding.UTF8.GetBytes(JoinCfg(serverUrl, inviteCode)));
-        using var package = new ZipArchive(File.OpenRead(PackagePath), ZipArchiveMode.Read);
-        foreach (var entry in package.Entries)
+        var files = new List<(string Path, byte[] Bytes)>
         {
-            using var s = entry.Open();
-            using var ms = new MemoryStream();
-            s.CopyTo(ms);
-            Add(zip, folder + "/" + entry.FullName, ms.ToArray());
+            (folder + "/project.godot", Encoding.UTF8.GetBytes(ProjectGodot(projectName))),
+            (folder + "/" + Prefix + "join.cfg", Encoding.UTF8.GetBytes(JoinCfg(serverUrl, join))),
+        };
+        using (var package = new ZipArchive(File.OpenRead(PackagePath), ZipArchiveMode.Read))
+        {
+            foreach (var entry in package.Entries)
+            {
+                if (entry.FullName.EndsWith('/')) continue;
+                using var s = entry.Open();
+                using var ms = new MemoryStream();
+                s.CopyTo(ms);
+                files.Add((folder + "/" + entry.FullName, ms.ToArray()));
+            }
+        }
+        // Every folder gets its own entry, before its files: Godot's Project
+        // Manager imports a zip directly, but only makes the folders the zip
+        // lists, and skips every file in a folder that isn't listed.
+        using var zip = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true);
+        var made = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (path, bytes) in files)
+        {
+            var parts = path.Split('/');
+            for (var i = 1; i < parts.Length; i++)
+            {
+                var dir = string.Join('/', parts[..i]) + "/";
+                if (made.Add(dir)) zip.CreateEntry(dir).ExternalAttributes = UnixFolder;
+            }
+            Add(zip, path, bytes);
         }
     }
+
+    // rwxr-xr-x folders and rw-r--r-- files, so unzip tools that read Unix
+    // modes (macOS, Linux) make them readable.
+    private const int UnixFolder = unchecked((int)0x41ED0000); // 040755 << 16
+    private const int UnixFile = unchecked((int)0x81A40000);   // 100644 << 16
 
     // Windows cannot store \ / : * ? " < > | in names, nor a trailing dot or space.
     public static string FolderName(string projectName)
@@ -201,21 +314,32 @@ public sealed class AddonStore
         return cleaned.Length == 0 ? "YHDE project" : cleaned;
     }
 
+    // No config/features: any version written here makes every other Godot
+    // warn "Opening will change it to Godot 4.x" (checked on 4.6 and 4.7.2).
+    // Without it Godot opens the starter quietly and writes in its own
+    // version; the game's real settings arrive when it connects.
     public static string ProjectGodot(string projectName) =>
         "; Engine configuration file.\n" +
         "; Made by the YHDE server: the project's own settings arrive when you connect.\n\n" +
         "config_version=5\n\n" +
         "[application]\n\n" +
         $"config/name=\"{GodotString(projectName)}\"\n" +
-        "config/features=PackedStringArray(\"4.7\")\n\n" +
+        "\n" +
         "[editor_plugins]\n\n" +
         "enabled=PackedStringArray(\"res://addons/yhde/plugin.cfg\")\n";
 
-    public static string JoinCfg(string serverUrl, string inviteCode) =>
-        "; Read and deleted by YHDE the first time this project opens.\n" +
-        "[join]\n\n" +
-        $"url=\"{GodotString(serverUrl)}\"\n" +
-        $"code=\"{GodotString(inviteCode)}\"\n";
+    public static string JoinCfg(string serverUrl, string inviteCode) => JoinCfg(serverUrl, new JoinFile(Code: inviteCode));
+
+    public static string JoinCfg(string serverUrl, JoinFile join)
+    {
+        var sb = new StringBuilder("; Read and deleted by YHDE the first time this project opens.\n[join]\n\n");
+        sb.Append($"url=\"{GodotString(serverUrl)}\"\n");
+        if (join.Code is { } code) sb.Append($"code=\"{GodotString(code)}\"\n");
+        if (join.Ticket is { } ticket) sb.Append($"ticket=\"{GodotString(ticket)}\"\n");
+        if (join.Project is { } project) sb.Append($"project=\"{GodotString(project)}\"\n");
+        if (join.From is { } from) sb.Append($"from=\"{GodotString(from)}\"\n");
+        return sb.ToString();
+    }
 
     public static string? VersionOf(string pluginCfg)
     {
@@ -255,6 +379,7 @@ public sealed class AddonStore
     private static void Add(ZipArchive zip, string path, byte[] bytes)
     {
         var entry = zip.CreateEntry(path, CompressionLevel.Optimal);
+        entry.ExternalAttributes = UnixFile;
         using var s = entry.Open();
         s.Write(bytes);
     }

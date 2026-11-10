@@ -126,6 +126,21 @@ Uploads and downloads resume where they stopped. A file is written only after
 its hash checks out ([assets.md](assets.md)). When many files vanish at once,
 nothing is deleted for the team until someone confirms.
 
+A file one editor cannot write is never deleted for the others: it stays
+"not written here" until it can be written, and it is not sent from that
+editor meanwhile. The server refuses a file change made against bytes the
+file no longer has ([ADR 0018](adr/0018-deletions-need-proof.md)).
+
+### Godot closing unexpectedly
+
+While the editor runs, `.godot/yhde/running` exists; a clean exit removes it.
+YHDE keeps its last actions (files written and deleted, imports, reloads)
+and Godot's last errors and warnings in `.godot/yhde/last.log`, written
+before work that could take the editor down. On the next start with the
+marker still there, the panel says Godot closed unexpectedly and offers to
+copy that report. The editor writes no log file of its own by default, so
+this is the only record.
+
 ## 7. Backups
 
 - The server kit dumps the whole database once a day and when it starts, and

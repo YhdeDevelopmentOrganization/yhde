@@ -125,6 +125,13 @@ public:
 	void accept_held_code() { asset_.accept_code(); }
 	void set_trust_code(bool on) { asset_.set_trust_code(on); }
 	void restore_deletions() { asset_.restore_deletions(); }
+	// Files the log has that could not be written here: [{path, reason, exists}].
+	Array get_unwritten() const { return asset_.unwritten(); }
+	void keep_local_file(const String &path) { asset_.keep_local(path); }
+	// When the editor did not close cleanly last time: what YHDE and Godot
+	// were doing just before. "" otherwise.
+	String get_crash_report() const;
+	void clear_crash_report();
 
 	// Test support (YHDE_AUDIT): what this editor sent, per editor action.
 	Array take_audit();

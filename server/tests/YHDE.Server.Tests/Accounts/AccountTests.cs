@@ -92,6 +92,24 @@ public sealed class AccountServiceTests
             .Should().ThrowAsync<AccountService.Refused>().Where(r => r.Status == 401);
     }
 
+    // The confirmation link signs in the account it confirms (AuthEndpoints
+    // /verify), once, and only that account.
+    [Fact]
+    public async Task Confirming_gives_the_account_once()
+    {
+        if (Open() is not var (accounts, store, mail)) return;
+        var email = NewEmail();
+        await accounts.RegisterAsync(email, "lanterns over the bay", "Noor", Ip(), Base, default);
+        var token = mail.LinkToken(email, "/app#/verify");
+
+        var confirmed = await accounts.ConfirmAsync(token, default);
+        confirmed.Should().NotBeNull();
+        confirmed!.Email.Should().Be(email);
+        confirmed.EmailVerified.Should().BeTrue();
+        (await accounts.ConfirmAsync(token, default)).Should().BeNull("links work once");
+        (await accounts.ConfirmAsync("not-a-token", default)).Should().BeNull();
+    }
+
     [Fact]
     public async Task Signing_up_twice_gives_no_hint_and_warns_the_owner()
     {

@@ -138,6 +138,7 @@ public sealed class OperationProcessorTests
         var registered = new OperationSubmission(Guid.NewGuid(), OperationType.RegisterAsset, target,
             $$"""{"s":"res://f.png","h":"{{oldHash}}","n":1}""", Guid.NewGuid(), 0);
         opRepo.GetLatestAssetOpAsync(BranchId, target, Arg.Any<CancellationToken>()).Returns(MakeCommitted(registered));
+        opRepo.GetCurrentFileHashAsync(BranchId, "res://f.png", Arg.Any<CancellationToken>()).Returns(oldHash);
         var update = new OperationSubmission(Guid.NewGuid(), OperationType.UpdateAsset, target,
             $$"""{"s":"res://f.png","h":"{{newHash}}","n":1,"o":"{{oldHash}}"}""", Guid.NewGuid(), 0);
         var delete = new OperationSubmission(Guid.NewGuid(), OperationType.DeleteAsset, target,
@@ -145,6 +146,77 @@ public sealed class OperationProcessorTests
 
         (await processor.ProcessAsync(update, BranchId, ActorId, SessionId, default)).Should().BeOfType<SubmitResult.Committed>();
         (await processor.ProcessAsync(delete, BranchId, ActorId, SessionId, default)).Should().BeOfType<SubmitResult.Committed>();
+    }
+
+    // A file change names the bytes it replaces ("o"). An editor that missed a
+    // teammate's newer version must not overwrite or delete it.
+    [Theory]
+    [InlineData(OperationType.UpdateAsset)]
+    [InlineData(OperationType.DeleteAsset)]
+    public async Task A_file_change_against_bytes_the_file_no_longer_has_is_Outdated(string type)
+    {
+        var (processor, opRepo, _) = BuildProcessor(existsReturn: false);
+        var stale = await Blobs.PutAsync([11]);
+        var current = await Blobs.PutAsync([12]);
+        var mine = await Blobs.PutAsync([13]);
+        opRepo.GetCurrentFileHashAsync(BranchId, "res://g.png", Arg.Any<CancellationToken>()).Returns(current);
+        var payload = type == OperationType.DeleteAsset
+            ? $$"""{"s":"res://g.png","o":"{{stale}}"}"""
+            : $$"""{"s":"res://g.png","h":"{{mine}}","n":1,"o":"{{stale}}"}""";
+        var sub = new OperationSubmission(Guid.NewGuid(), type, Guid.NewGuid(), payload, Guid.NewGuid(), 0);
+
+        var result = await processor.ProcessAsync(sub, BranchId, ActorId, SessionId, default);
+
+        result.Should().BeOfType<SubmitResult.Rejected>().Which.Code.Should().Be(RejectionCode.Outdated);
+        await opRepo.DidNotReceiveWithAnyArgs().CommitGroupAsync(default!, default, default);
+    }
+
+    [Fact]
+    public async Task An_update_of_a_file_that_is_gone_is_Outdated()
+    {
+        var (processor, opRepo, _) = BuildProcessor(existsReturn: false);
+        var old = await Blobs.PutAsync([21]);
+        var mine = await Blobs.PutAsync([22]);
+        opRepo.GetCurrentFileHashAsync(BranchId, "res://gone.png", Arg.Any<CancellationToken>()).Returns((string?)null);
+        var sub = new OperationSubmission(Guid.NewGuid(), OperationType.UpdateAsset, Guid.NewGuid(),
+            $$"""{"s":"res://gone.png","h":"{{mine}}","n":1,"o":"{{old}}"}""", Guid.NewGuid(), 0);
+
+        var result = await processor.ProcessAsync(sub, BranchId, ActorId, SessionId, default);
+
+        result.Should().BeOfType<SubmitResult.Rejected>().Which.Code.Should().Be(RejectionCode.Outdated);
+    }
+
+    // Two people add the same new path at once: the second does not silently
+    // replace the first.
+    [Fact]
+    public async Task A_registration_over_a_live_file_with_other_bytes_is_Outdated()
+    {
+        var (processor, opRepo, _) = BuildProcessor(existsReturn: false);
+        var theirs = await Blobs.PutAsync([31]);
+        var mine = await Blobs.PutAsync([32]);
+        opRepo.GetCurrentFileHashAsync(BranchId, "res://new.png", Arg.Any<CancellationToken>()).Returns(theirs);
+        var sub = new OperationSubmission(Guid.NewGuid(), OperationType.RegisterAsset, Guid.NewGuid(),
+            $$"""{"s":"res://new.png","h":"{{mine}}","n":1}""", Guid.NewGuid(), 0);
+
+        var result = await processor.ProcessAsync(sub, BranchId, ActorId, SessionId, default);
+
+        result.Should().BeOfType<SubmitResult.Rejected>().Which.Code.Should().Be(RejectionCode.Outdated);
+    }
+
+    [Fact]
+    public async Task A_move_names_the_bytes_of_its_source()
+    {
+        var (processor, opRepo, _) = BuildProcessor(existsReturn: false);
+        var stale = await Blobs.PutAsync([41]);
+        var current = await Blobs.PutAsync([42]);
+        opRepo.GetCurrentFileHashAsync(BranchId, "res://from.png", Arg.Any<CancellationToken>()).Returns(current);
+        var moved = new OperationSubmission(Guid.NewGuid(), OperationType.MoveAsset, Guid.NewGuid(),
+            $$"""{"s":"res://to.png","f":"res://from.png","h":"{{current}}","n":1,"o":"{{current}}"}""", Guid.NewGuid(), 0);
+        var staleMove = moved with { OpId = Guid.NewGuid(), Payload = $$"""{"s":"res://to.png","f":"res://from.png","h":"{{stale}}","n":1,"o":"{{stale}}"}""" };
+
+        (await processor.ProcessAsync(staleMove, BranchId, ActorId, SessionId, default))
+            .Should().BeOfType<SubmitResult.Rejected>().Which.Code.Should().Be(RejectionCode.Outdated);
+        (await processor.ProcessAsync(moved, BranchId, ActorId, SessionId, default)).Should().BeOfType<SubmitResult.Committed>();
     }
 
     // Helpers

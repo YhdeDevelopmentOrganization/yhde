@@ -4,6 +4,84 @@ What changed in each YHDE release. The website's "What's new" page shows the
 same history (`server/admin-ui/src/site/pages/Changelog.tsx`), plus release
 notes published on the admin page.
 
+## v0.7.4 (2026-11-10)
+
+Update the server first: add-ons older than 0.7.4 can still sign in, but
+the server refuses their changes until they update.
+
+### Godot add-on
+
+- A file your editor cannot write (a read-only folder, a full disk, a file in
+  use, a name Windows cannot store) is no longer deleted for your whole
+  team. Before, it was gone for everyone about a second later. Now the
+  panel lists it with the reason, YHDE keeps trying, and nothing is sent for
+  it from your editor until it is written. "Keep mine" shares your copy
+  instead.
+- A file your editor could not update is no longer sent back to the team
+  with its old content when something touches it.
+- Writing a teammate's file no longer removes your copy first, so a failed
+  write leaves you with the old file instead of none.
+- A deletion that would remove a whole add-on, or a whole top-level folder,
+  now waits for you to confirm, however few files it has.
+- When Godot closed unexpectedly, the panel says so on the next start and
+  offers "Copy report": what YHDE was doing and Godot's last errors.
+- Works with Godot 4.7 and 4.8 (tested on 4.7.0, 4.7.2 and 4.8 beta 3).
+- Files whose names Windows cannot store (`< > " | ? *`, `CON`, `NUL`,
+  `COM1` and the like) are not shared, and you are told why.
+- A game opened from an invite link shows one button in the YHDE panel:
+  "Join <game>". If you are not signed in, your browser opens first; after
+  that the game's files arrive with no more clicks.
+- Until a folder is in a project, the panel shows only the next step: sign
+  in, pick one of your projects, or "Share this game". Tabs and options
+  appear once the folder is live.
+- After sharing a game, "Invite people" makes a link to copy: "Can edit" or
+  "Can only watch". The same is under People and in a project's menu.
+- A missing YHDE file or a server that can't be reached is said in one
+  sentence in the panel, with one button to fix it.
+- An invite is not lost if Godot closes before you press Join.
+
+### Server
+
+- A file change made against a version of the file that is no longer
+  current is refused, so an editor that missed a teammate's change can no
+  longer overwrite or delete it. The editor keeps a copy of its version and
+  takes the current one.
+- Add-ons older than 0.7.4 can still sign in, but their changes are refused
+  until they update.
+- A project ready for Godot can be opened with Import in Godot's Project
+  Manager, picking the zip as it is. Before, Godot left the YHDE add-on out
+  of it, so the project opened without YHDE.
+- Invite links can let people edit. Each download carries a one-time ticket;
+  after signing in, that account joins the project. The owner picks "can
+  edit" or "can only watch" when making the link. Links that let people edit
+  are offered once the 0.7.4 add-on is uploaded on the admin page.
+- Someone in a project can download it ready for Godot, signed in as them.
+- The link in the confirmation email signs you in, so you don't sign in a
+  second time after making an account.
+
+### Website
+
+- The page an invite link opens says who invited you to which game, and
+  whether you can edit or only watch. One button downloads the game; nothing
+  downloads by itself any more. Three steps follow: download, open it in
+  Godot, press Join.
+- A link that no longer works says who to ask for a new one.
+- The game ready for Godot no longer names a Godot version, so opening it
+  in another version of Godot asks nothing.
+- The browser page that confirms a sign-in from Godot also mentions Join.
+- With no projects yet, the Projects page shows two things: "Start a
+  project" (the beta access code is asked there) and "I was invited" (paste
+  the link or type the code).
+- A new project's page starts with three steps: download it for Godot, open
+  it and press Join, invite people. Each shows when it's done.
+- Inviting is in one place under People: "Can edit" or "Can only watch",
+  Copy invite link, the code, or an email. Working links are listed with the
+  people. The separate View links panel is gone.
+- The sign-in page Godot opens says Godot is waiting, and you can make an
+  account on the same page. After confirming your email you're back on the
+  page that lets Godot in.
+- The Docs page has the three ways in, three steps each.
+
 ## v0.6.9 (2026-11-02)
 
 ### Godot add-on

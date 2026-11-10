@@ -8,7 +8,7 @@ import { Wordmark } from "@/world/parts"
 import { PLANS, PLANS_OPEN, euro, planById, yearly, type PlanId } from "@/world/plans"
 import { CookieNotice, href } from "@/site/chrome"
 import { go, type Route } from "../App"
-import { auth, providerUrl, useMe } from "../auth"
+import { auth, providerUrl, rememberReturn, takeReturn, useMe } from "../auth"
 
 const TEXT = {
   home: "YHDE home",
@@ -25,8 +25,14 @@ const TEXT = {
   forgot: "Forgot it?",
   signingIn: "Signing in…",
   newHere: "New to YHDE?",
-  startTeam: "Start a team",
-  joining: "Invited to a project? Open the link in the invitation, or sign up with the address it went to.",
+  makeTitle: "Make an account",
+  godotTitle: "Sign in to YHDE",
+  godotSub: "Godot is waiting. Sign in, or make an account.",
+  sentSub: (email: string, godot: boolean) => (
+    <>
+      We sent a link to <strong className="text-text">{email}</strong>. Open it to finish{godot ? ". It brings you back here, and Godot keeps waiting" : ""}.
+    </>
+  ),
   steps: ["Plan", "Account", "Confirm email"],
   stepsLabel: "Steps",
   planTitle: "How big is your team?",
@@ -55,7 +61,7 @@ const TEXT = {
   and: "and the",
   privacy: "Privacy policy",
   checkTitle: "Check your email",
-  checkSub: (email: string) => <>We sent a link to <strong className="text-text">{email}</strong>. Open it to confirm your email, then sign in.</>,
+  checkSub: (email: string) => <>We sent a link to <strong className="text-text">{email}</strong>. Open it to finish.</>,
   spam: "Nothing there after a few minutes? Check your spam folder.",
   toSignIn: "Go to sign in",
   confirming: "Confirming…",
@@ -193,58 +199,125 @@ function Providers({ returnTo }: { returnTo?: string }) {
 
 export function SignInPage({ route }: { route: Route }) {
   const t = TEXT
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
+  // Opened from Godot (the page that approves it) or with somewhere to go back to.
+  const fromGodot = location.hash.startsWith("#/device")
+  const [mode, setMode] = useState<"in" | "make" | "sent">("in")
+  const [form, setForm] = useState({ name: "", email: "", password: "" })
   const [error, setError] = useState(route.query.get("error") ?? "")
   const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    if (fromGodot) rememberReturn(location.hash)
+  }, [fromGodot])
+  const returnTo = fromGodot ? "/app" + location.hash : undefined
+  const switchTo = (m: "in" | "make") => {
+    setError("")
+    setMode(m)
+  }
+
+  if (mode === "sent")
+    return (
+      <AuthLayout>
+        <div className="grid gap-5">
+          <span className="grid size-14 place-items-center rounded-2xl bg-tint-green text-good">
+            <MailCheck className="size-7" aria-hidden="true" />
+          </span>
+          <Title sub={t.sentSub(form.email, fromGodot)}>{t.checkTitle}</Title>
+          <p className="text-sm text-dim">{t.spam}</p>
+        </div>
+      </AuthLayout>
+    )
+
   return (
     <AuthLayout>
-      <Title>{t.signIn}</Title>
-      <Providers returnTo={location.hash.startsWith("#/device") ? "/app" + location.hash : undefined} />
-      <form
-        className="grid gap-5"
-        onSubmit={async (e) => {
-          e.preventDefault()
-          setBusy(true)
-          setError("")
-          try {
-            await auth.login(email, password)
-            // Signing in to approve Godot: stay on that page.
-            if (!location.hash.startsWith("#/device")) go("/projects")
-          } catch (err) {
-            setError((err as Error).message)
-          } finally {
-            setBusy(false)
-          }
-        }}
-      >
-        <Field id="email" label={t.email} type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required />
-        <div className="grid gap-2">
-          <div className="flex items-baseline">
-            <Label htmlFor="password" className="label-dim">
-              {t.password}
-            </Label>
-            <a href="#/forgot" className="ml-auto text-xs font-semibold text-sky hover:underline">
-              {t.forgot}
-            </a>
+      <Title sub={fromGodot ? t.godotSub : undefined}>{mode === "make" ? t.makeTitle : fromGodot ? t.godotTitle : t.signIn}</Title>
+      <Providers returnTo={returnTo} />
+      {mode === "in" ? (
+        <form
+          className="grid gap-5"
+          onSubmit={async (e) => {
+            e.preventDefault()
+            setBusy(true)
+            setError("")
+            try {
+              await auth.login(form.email, form.password)
+              const back = takeReturn()
+              // Signing in to approve Godot: stay on that page.
+              if (!fromGodot) go(back ?? "/projects")
+            } catch (err) {
+              setError((err as Error).message)
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          <Field id="email" label={t.email} type="email" autoComplete="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} autoFocus={!fromGodot} required />
+          <div className="grid gap-2">
+            <div className="flex items-baseline">
+              <Label htmlFor="password" className="label-dim">
+                {t.password}
+              </Label>
+              <a href="#/forgot" className="ml-auto text-xs font-semibold text-sky hover:underline">
+                {t.forgot}
+              </a>
+            </div>
+            <Input id="password" type="password" autoComplete="current-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className="h-11" required />
           </div>
-          <Input id="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} className="h-11" required />
-        </div>
-        <Problem>{error || null}</Problem>
-        <Button type="submit" size="lg" disabled={busy}>
-          {busy ? t.signingIn : t.signIn}
-        </Button>
-      </form>
-      <p className="mt-8 text-sm text-dim">
-        {t.newHere}{" "}
-        <a href="#/start" className="font-semibold text-sky hover:underline">
-          {t.startTeam}
-        </a>
-        <span className="mx-2" aria-hidden="true">
-          ·
-        </span>
-        {t.joining}
-      </p>
+          <Problem>{error || null}</Problem>
+          <Button type="submit" size="lg" disabled={busy}>
+            {busy ? t.signingIn : t.signIn}
+          </Button>
+          <p className="text-sm text-dim">
+            {t.newHere}{" "}
+            <button type="button" className="cursor-pointer font-semibold text-sky hover:underline" onClick={() => switchTo("make")}>
+              {t.makeTitle}
+            </button>
+          </p>
+        </form>
+      ) : (
+        <form
+          className="grid gap-5"
+          onSubmit={async (e) => {
+            e.preventDefault()
+            setError("")
+            setBusy(true)
+            try {
+              // The confirmation link brings them back here (or to Projects).
+              if (fromGodot) rememberReturn(location.hash)
+              await auth.register(form.email, form.password, form.name)
+              setMode("sent")
+            } catch (err) {
+              setError((err as Error).message)
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          <Field id="name" label={t.name} autoComplete="name" maxLength={48} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} hint={t.nameHint} required />
+          <Field id="email" label={t.email} type="email" autoComplete="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
+          <Field id="password" label={t.password} type="password" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} hint={t.pwHint} required minLength={10} />
+          <Problem>{error || null}</Problem>
+          <Button type="submit" size="lg" disabled={busy}>
+            {busy ? t.making : t.make}
+          </Button>
+          <p className="text-xs leading-relaxed text-dim">
+            {t.agreeA}{" "}
+            <a href={href("/terms")} className="font-semibold text-sky hover:underline">
+              {t.terms}
+            </a>{" "}
+            {t.and}{" "}
+            <a href={href("/privacy")} className="font-semibold text-sky hover:underline">
+              {t.privacy}
+            </a>
+            .
+          </p>
+          <p className="text-sm text-dim">
+            {t.haveAccount}{" "}
+            <button type="button" className="cursor-pointer font-semibold text-sky hover:underline" onClick={() => switchTo("in")}>
+              {t.signIn}
+            </button>
+          </p>
+        </form>
+      )}
     </AuthLayout>
   )
 }
@@ -395,9 +468,6 @@ export function StartPage({ route }: { route: Route }) {
           </span>
           <Title sub={t.checkSub(form.email)}>{t.checkTitle}</Title>
           <p className="text-sm text-dim">{t.spam}</p>
-          <Button variant="secondary" size="lg" asChild>
-            <a href="#/sign-in">{t.toSignIn}</a>
-          </Button>
         </div>
       )}
     </AuthLayout>
@@ -415,7 +485,12 @@ export function VerifyPage({ route }: { route: Route }) {
     const token = route.query.get("token") ?? ""
     verifying ??= auth.verify(token)
     verifying.then(
-      () => setState("ok"),
+      () => {
+        // Signed in by the link: back to where they started (approving Godot, say).
+        const back = takeReturn()
+        if (back) go(back)
+        else setState("ok")
+      },
       (e) => {
         setError((e as Error).message)
         setState("failed")

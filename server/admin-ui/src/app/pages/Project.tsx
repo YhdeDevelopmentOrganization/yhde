@@ -33,7 +33,7 @@ import { last30Days, shortDay } from "@/admin/format";
 import { PageHead, go, run } from "../App";
 import { ActivityPanel } from "../ActivityPanel";
 import { PeoplePanel } from "../People";
-import { ViewLinks } from "../ViewLinks";
+import { FirstSteps } from "../FirstSteps";
 import {
   api,
   owns,
@@ -64,6 +64,8 @@ export function ProjectPage({ id }: { id: string }) {
 
   const here = s.presence.filter((x) => x.projectId === p.id);
   const owner = owns(p);
+  // Just made, nothing in it yet: only the steps, people and image.
+  const fresh = !p.inGodot && p.files === 0 && p.changes === 0 && !here.length;
 
   return (
     <>
@@ -138,7 +140,15 @@ export function ProjectPage({ id }: { id: string }) {
         }
       />
 
+      <div className="mb-5 empty:hidden">
+        <FirstSteps
+          p={p}
+          onInvite={() => document.getElementById("people")?.scrollIntoView({ behavior: "smooth" })}
+        />
+      </div>
+
       <div className="grid gap-5 xl:grid-cols-12">
+        {!fresh ? (
         <div className="grid content-start gap-5 xl:col-span-8">
           <Panel
             title="In the scene now"
@@ -169,8 +179,7 @@ export function ProjectPage({ id }: { id: string }) {
               </ul>
             ) : (
               <p className="px-4 py-6 text-xs text-dim">
-                Nobody is in {p.name} right now. Open Godot (4.7 or newer), sign
-                in from the YHDE panel and pick {p.name}.
+                Nobody is in {p.name} right now.
               </p>
             )}
           </Panel>
@@ -185,17 +194,21 @@ export function ProjectPage({ id }: { id: string }) {
 
           <ActivityPanel p={p} me={s.user.name} />
         </div>
+        ) : null}
 
-        <div className="grid content-start gap-5 xl:col-span-4">
+        <div className={`grid content-start gap-5 ${fresh ? "md:grid-cols-2 xl:col-span-12" : "xl:col-span-4"}`}>
+          <div id="people" className="grid scroll-mt-6">
+            <PeoplePanel p={p} />
+          </div>
           <ImagePanel p={p} canChange={owner} />
-          <PeoplePanel p={p} />
-          {owner ? <ViewLinks p={p} /> : null}
-          <Panel title="Files">
-            <Readout label="Files" value={num(p.files)} />
-            <Readout label="Size" value={bytes(p.bytes)} />
-            <Readout label="Changes, all time" value={num(p.changes)} />
-            <Readout label="Last change" value={ago(p.activity[0]?.at)} />
-          </Panel>
+          {!fresh ? (
+            <Panel title="Files">
+              <Readout label="Files" value={num(p.files)} />
+              <Readout label="Size" value={bytes(p.bytes)} />
+              <Readout label="Changes, all time" value={num(p.changes)} />
+              <Readout label="Last change" value={ago(p.activity[0]?.at)} />
+            </Panel>
+          ) : null}
         </div>
       </div>
 

@@ -149,7 +149,13 @@ The server lists `"assets"` in its capabilities. A file operation is accepted
 only after its bytes are stored (otherwise `AssetMissing`). One that changes
 nothing (same path, same bytes, as when two editors register the same
 starting files) gets `AlreadyCurrent` and is not logged; the editor counts it
-as done.
+as done. One made against bytes the file no longer has, or a registration of
+a path another file already has, gets `Outdated`
+([ADR 0018](adr/0018-deletions-need-proof.md)).
+
+An add-on older than the server's minimum (0.7.4) may sign in and read, but
+its operations are refused with `UpdateNeeded` and its undo requests with
+error 403.
 
 ## 6. Delivery
 

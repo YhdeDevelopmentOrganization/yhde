@@ -14,6 +14,8 @@ signal problem(text: String)
 signal message(text: String)                   # something worked (for a toast)
 
 const FILE := "yhde_account.cfg"
+const TICKETS := "join tickets" # folder -> ticket, in the same file
+const INVITES := "invites" # folder -> {kind, project, from}, in the same file
 ## Redirects are followed by hand, to the same address only, this many times.
 const MAX_REDIRECTS := 3
 const REDIRECT_STATUS := [301, 302, 303, 307, 308]
@@ -54,6 +56,11 @@ func signed_in() -> bool:
 
 func waiting_for_browser() -> bool:
 	return _device_code != ""
+
+
+## The code the browser page shows while signing in ("" when not waiting).
+func user_code() -> String:
+	return _user_code
 
 
 ## Starts signing in: gets a code, opens the approval page in the browser.
@@ -174,13 +181,79 @@ func create_project(project_name: String) -> Dictionary:
 	return {}
 
 
-## A view link for one person to watch the project (7 days). "" on failure.
-func make_link(project_id: String) -> String:
-	var r := await _request(HTTPClient.METHOD_POST, "/api/team/projects/%s/links" % project_id, {"label": "From Godot", "hours": 168, "maxUses": 1}, true)
+## An invite link for one person (7 days): access "edit" (they join the
+## project after signing in) or "view" (they watch). "" on failure.
+func make_link(project_id: String, access := "view") -> String:
+	var r := await _request(HTTPClient.METHOD_POST, "/api/team/projects/%s/links" % project_id,
+		{"label": "From Godot", "hours": 168, "maxUses": 1, "access": access}, true)
 	if r.code != 200:
-		problem.emit(_error_text(r, "Couldn't make a view link."))
+		problem.emit(_error_text(r, "Couldn't make the link."))
 		return ""
 	return str(r.data.get("url", ""))
+
+
+## The project's short join code, made now if it has none. "" on failure.
+func join_code(project_id: String) -> String:
+	var known := str(project_info(project_id).get("joinCode", ""))
+	if known != "" and known != "<null>":
+		return known
+	var r := await _request(HTTPClient.METHOD_POST, "/api/team/projects/%s/join-code" % project_id, {}, true)
+	if r.code != 200:
+		problem.emit(_error_text(r, "Couldn't make a code."))
+		return ""
+	return str(r.data.get("code", ""))
+
+
+## Joins a project with the ticket a starter project came with (the server
+## makes this account a member). Returns {id, name, branchId, access,
+## already}, or {"error": text, "status": code} when it was refused.
+func redeem_ticket(ticket: String) -> Dictionary:
+	var r := await _request(HTTPClient.METHOD_POST, "/api/team/join-ticket", {"ticket": ticket}, true)
+	if r.code != 200:
+		return {"error": _error_text(r, "Couldn't join the project."), "status": r.code}
+	await refresh()
+	return r.data
+
+
+## A starter project's ticket, kept outside the project (like the sign-in),
+## one per folder, until it is used.
+func save_ticket(folder: String, ticket: String) -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(_path())
+	if ticket == "":
+		if cfg.has_section_key(TICKETS, folder):
+			cfg.erase_section_key(TICKETS, folder)
+	else:
+		cfg.set_value(TICKETS, folder, ticket)
+	_write(cfg)
+
+
+func ticket_for(folder: String) -> String:
+	var cfg := ConfigFile.new()
+	cfg.load(_path())
+	return str(cfg.get_value(TICKETS, folder, ""))
+
+
+## What a starter project's join file said (kind "ticket" or "code", the
+## game's and the inviter's names), one per folder until it is used. Kept
+## here and not in the project's editor settings, which Godot only writes
+## when it closes normally.
+func save_invite(folder: String, info: Dictionary) -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(_path())
+	if info.is_empty():
+		if cfg.has_section_key(INVITES, folder):
+			cfg.erase_section_key(INVITES, folder)
+	else:
+		cfg.set_value(INVITES, folder, info)
+	_write(cfg)
+
+
+func invite_for(folder: String) -> Dictionary:
+	var cfg := ConfigFile.new()
+	cfg.load(_path())
+	var info = cfg.get_value(INVITES, folder, {})
+	return info if info is Dictionary else {}
 
 
 ## Invites someone into one of your projects by email.
@@ -237,6 +310,10 @@ func _save() -> void:
 	else:
 		cfg.set_value(http_base, "token", token)
 		cfg.set_value(http_base, "user", user)
+	_write(cfg)
+
+
+func _write(cfg: ConfigFile) -> void:
 	# The sign-in is readable by this user only (Linux, macOS; Windows keeps
 	# the folder per user): written beside the file, restricted, then moved over it.
 	var tmp := _path() + ".tmp"

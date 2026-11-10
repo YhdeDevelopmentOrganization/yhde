@@ -1,5 +1,7 @@
 #include "yhde_session.h"
 
+#include "core/crash_log.h"
+
 #include "core/url.h"
 #include "sync/variant_codec.h"
 
@@ -43,7 +45,7 @@ const char *kDefaultUrl = "ws://127.0.0.1:5000/ws";
 const char *kDefaultProject = "ffffffff-0000-0000-0000-000000000001";
 const char *kDefaultBranch = "ffffffff-0000-0000-0000-000000000002";
 // Keep in step with addons/yhde/plugin.cfg and the server's ServerInfo.Version.
-const char *kAddonVersion = "0.6.9";
+const char *kAddonVersion = "0.7.4";
 constexpr size_t kMaxSocialBody = 64 * 1024;
 
 constexpr double kPresenceInterval = 1.0 / 15.0;
@@ -228,7 +230,19 @@ YhdeSession::~YhdeSession() {
 }
 
 void YhdeSession::_notification(int what) {
-	if (what == NOTIFICATION_EXIT_TREE && state_ != STATE_OFFLINE) stop();
+	if (what == NOTIFICATION_ENTER_TREE) yhde::CrashLog::start();
+	if (what == NOTIFICATION_EXIT_TREE) {
+		if (state_ != STATE_OFFLINE) stop();
+		yhde::CrashLog::stop();
+	}
+}
+
+String YhdeSession::get_crash_report() const {
+	return yhde::CrashLog::report();
+}
+
+void YhdeSession::clear_crash_report() {
+	yhde::CrashLog::clear_report();
 }
 
 double YhdeSession::now() const {
@@ -720,6 +734,7 @@ void YhdeSession::emit_notice(const String &text, int level) {
 // Frame loop
 
 void YhdeSession::_process(double delta) {
+	yhde::CrashLog::flush();
 	if (state_ == STATE_OFFLINE) return;
 	double t = now();
 	net_.poll(t);
@@ -1234,6 +1249,7 @@ void YhdeSession::on_rejected(const proto::OpRejected &msg) {
 		}
 		if (msg.code == "AssetMissing") return; // uploaded again, then resent
 		if (msg.code == "AlreadyCurrent") return; // someone shared the very same file first
+		if (msg.code == "Outdated") return;       // a teammate changed it first: theirs is taken
 	}
 	emit_notice(String("The server refused a change: ") + from_std(msg.reason), NOTICE_WARNING);
 	if ((op.type == "ChangeProperty" || op.type == "ChangeResourceProperty") && !queue_.masks(op.doc, op.target, op.key)) {
@@ -2097,6 +2113,10 @@ void YhdeSession::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("accept_held_code"), &YhdeSession::accept_held_code);
 	ClassDB::bind_method(D_METHOD("set_trust_code", "on"), &YhdeSession::set_trust_code);
 	ClassDB::bind_method(D_METHOD("restore_deletions"), &YhdeSession::restore_deletions);
+	ClassDB::bind_method(D_METHOD("get_unwritten"), &YhdeSession::get_unwritten);
+	ClassDB::bind_method(D_METHOD("get_crash_report"), &YhdeSession::get_crash_report);
+	ClassDB::bind_method(D_METHOD("clear_crash_report"), &YhdeSession::clear_crash_report);
+	ClassDB::bind_method(D_METHOD("keep_local_file", "path"), &YhdeSession::keep_local_file);
 
 	ADD_SIGNAL(MethodInfo("state_changed", PropertyInfo(Variant::INT, "state"), PropertyInfo(Variant::STRING, "text")));
 	ADD_SIGNAL(MethodInfo("peers_changed"));

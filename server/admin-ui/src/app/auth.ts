@@ -70,7 +70,11 @@ export const auth = {
     await call("POST", "/logout").catch(() => {})
     set(null)
   },
-  verify: (token: string) => call("POST", "/verify", { token }),
+  // The link in the email confirms it and signs that account in here.
+  verify: async (token: string) => {
+    await call("POST", "/verify", { token })
+    await loadMe()
+  },
   resend: () => call("POST", "/verify/resend"),
   forgot: (email: string) => call("POST", "/forgot", { email }),
   reset: async (token: string, password: string) => set(await call<Me>("POST", "/reset", { token, password })),
@@ -90,4 +94,25 @@ export function providerUrl(provider: "github" | "google", opts: { link?: boolea
   if (opts.link) q.set("link", "true")
   q.set("return", opts.returnTo ?? "/app#/projects")
   return `/auth/${provider}?${q}`
+}
+
+// Where someone was when they started signing in or making an account (the
+// page that approves Godot, say), so they come back to it afterwards, also
+// from the link in the confirmation email. Only pages of this app.
+const RETURN_KEY = "yhde.return"
+export function rememberReturn(hash: string) {
+  try {
+    if (hash.startsWith("#/")) localStorage.setItem(RETURN_KEY, hash)
+  } catch {
+    /* storage blocked: they land on Projects instead */
+  }
+}
+export function takeReturn(): string | null {
+  try {
+    const h = localStorage.getItem(RETURN_KEY)
+    localStorage.removeItem(RETURN_KEY)
+    return h && h.startsWith("#/") ? h : null
+  } catch {
+    return null
+  }
 }

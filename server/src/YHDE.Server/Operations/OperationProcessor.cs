@@ -83,6 +83,14 @@ public sealed class OperationProcessor(
                 "The file already has this content.");
         }
 
+        // 2b'. A file change names the bytes it replaces ("o"): one made
+        // against an older version would overwrite or delete newer work.
+        if (AssetRules.IsAssetOp(submission.Type) && await OutdatedAsync(submission, branchId, ct) is { } outdated)
+        {
+            logger.LogDebug("Op {OpId} ({Type}) is outdated: {Reason}", submission.OpId, submission.Type, outdated);
+            return new SubmitResult.Rejected(submission.ClientOpRef, submission.OpId, RejectionCode.Outdated, outdated);
+        }
+
         // 2c. A new name that differs from a file on the branch only in
         // capitals: on Windows and macOS both are the same file, and editors
         // there would overwrite each other's.
@@ -145,14 +153,48 @@ public sealed class OperationProcessor(
     private async Task<bool> IsAlreadyCurrentAsync(OperationSubmission s, Guid branchId, CancellationToken ct)
     {
         if (s.Type == OperationType.MoveAsset) return false;
-        var latest = await operationRepo.GetLatestAssetOpAsync(branchId, s.TargetId, ct);
         if (s.Type == OperationType.DeleteAsset)
-            return latest is null || latest.Type == OperationType.DeleteAsset;
+            return PathOf(s) is { } gone && await operationRepo.GetCurrentFileHashAsync(branchId, gone, ct) is null;
+        var latest = await operationRepo.GetLatestAssetOpAsync(branchId, s.TargetId, ct);
         if (latest is null || latest.Type == OperationType.DeleteAsset) return false;
         using var mine = JsonDocument.Parse(s.Payload);
         using var theirs = JsonDocument.Parse(latest.Payload);
         return mine.RootElement.TryGetProperty("h", out var h) && theirs.RootElement.TryGetProperty("h", out var current)
             && h.ValueKind == JsonValueKind.String && h.GetString() == current.GetString();
+    }
+
+    // Why a file change no longer fits the file (null when it does). Runs
+    // under the branch's file lock, so the answer holds until the commit.
+    private async Task<string?> OutdatedAsync(OperationSubmission s, Guid branchId, CancellationToken ct)
+    {
+        using var doc = JsonDocument.Parse(s.Payload);
+        var root = doc.RootElement;
+        string? Field(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var path = Field("s");
+        if (path is null) return null;
+        var o = Field("o");
+        switch (s.Type)
+        {
+            case OperationType.RegisterAsset:
+            {
+                var current = await operationRepo.GetCurrentFileHashAsync(branchId, path, ct);
+                return current is not null && current != Field("h") ? $"{path} was added by someone else first." : null;
+            }
+            case OperationType.MoveAsset:
+            {
+                var from = Field("f");
+                if (from is null) return null;
+                var current = await operationRepo.GetCurrentFileHashAsync(branchId, from, ct);
+                if (current is null) return $"{from} was moved or deleted by someone else.";
+                return current != o ? $"{from} was changed by someone else." : null;
+            }
+            default:
+            {
+                var current = await operationRepo.GetCurrentFileHashAsync(branchId, path, ct);
+                if (current is null) return $"{path} was moved or deleted by someone else.";
+                return current != o ? $"{path} was changed by someone else." : null;
+            }
+        }
     }
 
     internal static (RejectionCode code, string reason)? Validate(OperationSubmission s)

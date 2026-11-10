@@ -101,7 +101,7 @@ function BetaBilling({ plan }: { plan: MyPlan }) {
           <Readout label="Price" value="Free" hint="during the beta" />
           <Readout label="Projects" value={`${plan.maxProjects ?? "Any number"}`} />
           <Readout label="People" value={`${plan.peoplePerProject}`} hint={`invited into each project${plan.freeSeats ? `, ${plan.freeSeats} of them free from YHDE` : ""}`} />
-          <Readout label="Viewers" value={`${VIEWERS_PER_PROJECT}`} hint="per project, through view links" />
+          <Readout label="Viewers" value={`${VIEWERS_PER_PROJECT}`} hint="per project, through watch-only links" />
           <Readout label="Payment" value={<span className="text-xs text-text">Not needed</span>} />
           <Codes plan={plan} />
         </Panel>

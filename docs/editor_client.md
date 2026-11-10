@@ -9,7 +9,7 @@ what the add-on shows. The wire format is in
 
 ## 1. Two Layers
 
-Needs Godot 4.7 (tested on 4.7.2).
+Needs Godot 4.7 or 4.8 (tested on 4.7.0, 4.7.2 and 4.8 beta 3).
 
 | Layer | Language | Does |
 |---|---|---|

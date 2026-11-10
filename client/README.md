@@ -1,6 +1,6 @@
 # YHDE Godot Client
 
-The Godot add-on and its native core. Needs Godot 4.7 (tested on 4.7.2). How
+The Godot add-on and its native core. Needs Godot 4.7 or 4.8 (tested on 4.7.0, 4.7.2 and 4.8 beta 3). How
 it works: [docs/editor_client.md](../docs/editor_client.md).
 
 ```
@@ -59,7 +59,7 @@ For development, set `YHDE_SERVER=ws://localhost:5080/ws` before starting
 Godot to use a local server, and `YHDE_NO_BROWSER=1` to not open a browser
 when signing in.
 
-YHDE needs Godot 4.7 (tested on 4.7.2). In another version the add-on says so
+YHDE needs Godot 4.7 or 4.8. In an older version the add-on says so
 in a dialog instead of failing silently.
 
 | Where | What |
@@ -81,7 +81,7 @@ Set `YHDE_DEBUG=1` to log batch and scan timings.
 
 ## Tests
 
-All need a Godot 4.7 editor binary in `GODOT`. The server-backed tests run
+All need a Godot 4.7 or 4.8 editor binary in `GODOT`. The server-backed tests run
 the server with an access key, as a real deployment does (`server-bin` is a
 `dotnet publish` of the server).
 

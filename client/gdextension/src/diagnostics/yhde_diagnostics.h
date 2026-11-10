@@ -41,6 +41,9 @@ public:
 	Dictionary parse_url(const String &address);
 	// Why a project path is not shared ("" when it is): AssetSync::exclusion_reason.
 	String exclusion_reason(const String &path);
+	// The editor process ends at once (no clean exit) after this many more
+	// files written from the log: an editor dying in the middle of a transfer.
+	void stop_after_writes(int64_t count);
 
 	YhdeDiagnostics();
 	~YhdeDiagnostics();

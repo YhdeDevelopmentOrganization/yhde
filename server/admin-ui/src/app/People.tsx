@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Crown, KeyRound, LogOut, Mail } from "lucide-react"
+import { Crown, LogOut, Mail } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -11,64 +11,24 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { ago, until } from "@/admin/format"
 import { Panel, Peer } from "@/world/parts"
 import { go, run } from "./App"
+import { InviteControls, LinkRows } from "./InviteControls"
 import { api, owns, projectSeats, useAppState, type Access, type Member, type Project } from "./store"
 
-// Who is in a project (teams.md). Its owner invites people by email (they
-// get a link, and the invitation waits on their dashboard too), sets who can
+// Who is in a project (teams.md): people, open invitations and working
+// invite links. Its owner invites people (InviteControls.tsx), sets who can
 // edit or only view, removes people and can hand the project over. Members
 // see who else is in it and can leave.
-// The project's join code: anyone signed in who enters it on their Projects
-// page joins as a developer, while there is room. A new code stops the old one.
-function JoinCodeRow({ p }: { p: Project }) {
-  const seats = projectSeats(p)
-  const code = p.joinCode
-  return (
-    <div className="grid gap-2 rounded-xl bg-card-2 px-3 py-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <KeyRound className="size-3.5 text-sky" aria-hidden="true" />
-        <span className="label-dim">Join code</span>
-        {code ? <span className="font-mono text-sm tracking-wider text-text">{code}</span> : <span className="text-xs text-dim">Off</span>}
-        <span className="flex-1" />
-        {code ? (
-          <>
-            <Button variant="ghost" size="xs" onClick={() => run(() => navigator.clipboard.writeText(code), "Join code copied")}>
-              Copy
-            </Button>
-            <Button variant="ghost" size="xs" onClick={() => run(() => api.makeJoinCode(p.id), "New join code made. The old one no longer works.")}>
-              New code
-            </Button>
-            <Button variant="ghost" size="xs" onClick={() => run(() => api.joinCodeOff(p.id), "Join code turned off")}>
-              Turn off
-            </Button>
-          </>
-        ) : (
-          <Button variant="outline" size="xs" onClick={() => run(() => api.makeJoinCode(p.id), "Join code made")}>
-            Make a join code
-          </Button>
-        )}
-      </div>
-      <p className="text-[0.6875rem] leading-relaxed text-dim">
-        Anyone signed in to YHDE who enters it under Join a project on their Projects page joins {p.name} as a developer, while there is room ({seats.free} of{" "}
-        {seats.limit} places free).
-      </p>
-    </div>
-  )
-}
-
 export function PeoplePanel({ p }: { p: Project }) {
   const s = useAppState()
   const owner = owns(p)
   const seats = projectSeats(p)
-  const [email, setEmail] = useState("")
-  const [busy, setBusy] = useState(false)
   const [confirm, setConfirm] = useState<null | { kind: "remove" | "transfer"; m: Member } | { kind: "leave" }>(null)
 
   return (
-    <Panel title="People" meta={owner ? `${seats.used} of ${seats.limit} invited` : undefined} bodyClassName="p-0">
+    <Panel title="People" meta={owner ? `${seats.used} of ${seats.limit} places taken` : undefined} bodyClassName="p-0">
       <ul>
         {p.members.map((m) => (
           <li key={m.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-3">
@@ -127,44 +87,18 @@ export function PeoplePanel({ p }: { p: Project }) {
               </li>
             ))
           : null}
+        {owner ? <LinkRows p={p} /> : null}
       </ul>
 
-      <div className="grid gap-3 px-4 py-4">
-        {owner && !p.archived ? (
-          seats.free > 0 ? (
-            <form
-              className="flex gap-2"
-              onSubmit={async (e) => {
-                e.preventDefault()
-                setBusy(true)
-                if (await run(() => api.invite(p.id, email), `Invitation sent to ${email.trim()}`)) setEmail("")
-                setBusy(false)
-              }}
-            >
-              <Input className="h-9" type="email" placeholder="teammate@studio.com" aria-label="Email address to invite" value={email} onChange={(e) => setEmail(e.target.value)} />
-              <Button type="submit" className="h-9" disabled={busy || !email.trim()}>
-                {busy ? "Inviting…" : "Invite"}
-              </Button>
-            </form>
-          ) : (
-            <p className="text-xs text-text">
-              {p.name} has room for {seats.limit} people besides you, and they're all in or invited. Withdraw an invitation or remove someone to invite
-              someone else.
-            </p>
-          )
-        ) : null}
-        {owner && !p.archived ? <JoinCodeRow p={p} /> : null}
-        <p className="text-[0.6875rem] leading-relaxed text-dim">
-          {owner
-            ? "They get an email with a link to accept, and the invitation waits on their YHDE dashboard for 14 days, so accounts without a real inbox can join too. Anyone can be in any number of projects."
-            : `${p.owner?.name ?? "The owner"} decides who is in ${p.name}.`}
-        </p>
-        {!owner ? (
+      {owner && !p.archived ? <InviteControls p={p} /> : null}
+      {!owner ? (
+        <div className="grid gap-3 px-4 py-4">
+          <p className="text-[0.6875rem] leading-relaxed text-dim">{p.owner?.name ?? "The owner"} decides who is in {p.name}.</p>
           <Button variant="outline" size="sm" className="w-fit" onClick={() => setConfirm({ kind: "leave" })}>
             <LogOut /> Leave project
           </Button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
       <AlertDialog open={!!confirm} onOpenChange={(o) => !o && setConfirm(null)}>
         <AlertDialogContent>

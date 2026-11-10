@@ -20,7 +20,7 @@ the log. See [docs/vision.md](docs/vision.md) and
 
 | Part | Built with |
 |---|---|
-| Editor add-on | Godot 4.7 (tested on 4.7.2), GDScript UI, C++ GDExtension core |
+| Editor add-on | Godot 4.7 and 4.8, GDScript UI, C++ GDExtension core |
 | Server | C# on .NET 10 |
 | Database | PostgreSQL |
 | Files | Content-addressed blob store on disk |

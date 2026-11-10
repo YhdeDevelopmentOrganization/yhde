@@ -17,7 +17,12 @@ same time; they are kept in `oauth_links` and can be unlinked on the account
 page, as long as one way to sign in is left.
 
 With email and password, the address has to be confirmed through a link (valid
-for 2 days) before invitations show up. A forgotten password is reset through
+for 2 days) before invitations show up and before the account can approve
+Godot. Opening the link signs that account in on that browser, like a reset
+link, and goes back to the page where they started (the page approving Godot,
+say; kept in the browser as `yhde.return`), so nobody signs in twice. Making
+an account does not sign in by itself: the answer must be the same whether or
+not the address has an account. A forgotten password is reset through
 a link valid for 1 hour. Passwords are hashed with Argon2id
 ([security.md](security.md) §4). New accounts start empty: no
 projects.

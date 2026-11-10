@@ -3,7 +3,8 @@
 # server, then their project states are compared.
 #
 # Requirements
-#   GODOT      path to a Godot 4.7.x editor binary
+#   GODOT      path to a Godot 4.7 or 4.8 editor binary
+#   GODOT_B    optional: another Godot for editor B (a team on two versions)
 #   YHDE_URL   server websocket url (default ws://127.0.0.1:5000/ws)
 #   YHDE_BLEND_FILE, YHDE_BLENDER  optional: a .blend file and the Blender
 #              executable. Editor A imports the .blend with Blender, editor B
@@ -20,6 +21,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ADDON="$(cd "$HERE/../../godot/addons/yhde" && pwd)"
 GODOT="${GODOT:?set GODOT to a Godot 4.7 editor binary}"
+GODOT_B="${GODOT_B:-$GODOT}"
 YHDE_URL="${YHDE_URL:-ws://127.0.0.1:5000/ws}"
 WORK="${WORK:-$(mktemp -d)}"
 TIMEOUT="${TIMEOUT:-1800}"
@@ -41,6 +43,7 @@ cp "$HERE/setup_scenes.gd" "$WORK/template/"
 (cd "$WORK/template" && "$GODOT" --headless --path . -s res://setup_scenes.gd 2>&1 | grep -E "scenes ready|ERROR" || true)
 rm -f "$WORK/template/setup_scenes.gd" "$WORK/template/setup_scenes.gd.uid"
 
+godot_for() { [[ $1 == b ]] && echo "$GODOT_B" || echo "$GODOT"; }
 for p in a b; do
   cp -r "$WORK/template" "$WORK/proj_$p"
   ln -sfn "$ADDON" "$WORK/proj_$p/addons/yhde"
@@ -49,13 +52,13 @@ for p in a b; do
   printf '[plugin]\nname="yhde_e2e"\ndescription=""\nauthor=""\nversion="1"\nscript="plugin.gd"\n' > "$WORK/proj_$p/addons/yhde_e2e/plugin.cfg"
   # First launch imports the project; keep it out of the measured run. Use
   # --import: "--editor --quit" crashes Godot 4.7.2 when it first loads a GDExtension.
-  (cd "$WORK/proj_$p" && timeout 300 "$GODOT" --headless --import > /dev/null 2>&1) || { echo "first import failed"; exit 1; }
+  (cd "$WORK/proj_$p" && timeout 300 "$(godot_for $p)" --headless --import > /dev/null 2>&1) || { echo "first import failed"; exit 1; }
 done
 
 run_editor() {
   local role=$1
   (cd "$WORK/proj_$role" && YHDE_AUDIT=1 YHDE_ROLE=$role YHDE_SHARED="$WORK/shared" YHDE_URL="$YHDE_URL" \
-    timeout "$TIMEOUT" "$GODOT" --headless --editor --path . > "$WORK/$role.log" 2>&1)
+    timeout "$TIMEOUT" "$(godot_for $role)" --headless --editor --path . > "$WORK/$role.log" 2>&1)
 }
 
 run_editor a & PA=$!

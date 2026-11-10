@@ -1,5 +1,6 @@
 #include "assets/asset_sync.h"
 
+#include "core/crash_log.h"
 #include "sync/variant_codec.h"
 
 #include <godot_cpp/classes/config_file.hpp>
@@ -19,6 +20,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 
 using namespace godot;
 
@@ -40,7 +42,9 @@ constexpr size_t kCheckBatch = 2000;
 // project 19 of 20 files gone is as much a mistake as 2000 in a big one.
 constexpr size_t kMassDelete = 20;
 constexpr size_t kMassDeleteMin = 3;
-constexpr int64_t kStateVersion = 1;
+// 2 adds the files that could not be written here; a version 1 file is read
+// as having none (the scan finds them again).
+constexpr int64_t kStateVersion = 2;
 constexpr int64_t kMaxPathBytes = 1024; // AssetRules.MaxPathLength
 constexpr int kMaxDependencies = 128;
 constexpr double kSidecarWait = 30.0; // a received .import/.uid waits this long for its file's operation
@@ -95,6 +99,22 @@ String AssetSync::key_of(const String &path) {
 	return path;
 }
 
+// A name Windows cannot store, with the reason ("" when it can).
+static String windows_name_problem(const String &name) {
+	for (const char *c : { "<", ">", "\"", "|", "?", "*" }) {
+		if (name.contains(c)) return "its name has one of < > \" | ? * in it, which Windows cannot store";
+	}
+	// Device names, with any extension. \xC2\xB9 and so on are the superscripts 1, 2, 3.
+	static const char *devices[] = { "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+		"com8", "com9", "com\xC2\xB9", "com\xC2\xB2", "com\xC2\xB3", "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6",
+		"lpt7", "lpt8", "lpt9", "lpt\xC2\xB9", "lpt\xC2\xB2", "lpt\xC2\xB3" };
+	String stem = name.get_slice(".", 0).rstrip(" ").to_lower();
+	for (const char *d : devices) {
+		if (stem == String::utf8(d)) return "its name is reserved on Windows (CON, NUL, COM1 and the like)";
+	}
+	return String();
+}
+
 // The same rules as the server's AssetRules.IsValidPath, checked against one
 // table (client/tests/gate/path_rules.json): a file one side refuses never
 // sits unshared on the other without a word.
@@ -114,7 +134,7 @@ String AssetSync::exclusion_reason(const String &path) {
 		// A shared import result, one file directly in .godot/imported/.
 		String name = rel.get_file();
 		if (name != name.strip_edges() || name.ends_with(".")) return "a name in its path starts or ends with a space, or ends with a dot";
-		return String();
+		return windows_name_problem(name);
 	}
 	PackedStringArray parts = rel.split("/");
 	for (int64_t i = 0; i < parts.size(); i++) {
@@ -122,6 +142,8 @@ String AssetSync::exclusion_reason(const String &path) {
 		if (seg.is_empty() || seg == "." || seg == "..") return "its path has an empty, . or .. part";
 		// Windows cannot store these.
 		if (seg != seg.strip_edges() || seg.ends_with(".")) return "a name in its path starts or ends with a space, or ends with a dot";
+		String windows = windows_name_problem(seg);
+		if (!windows.is_empty()) return windows;
 		if (i + 1 < parts.size() && seg.begins_with(".")) return "skip"; // .godot, .git, editor folders
 	}
 	String lower = rel.get_file().to_lower();
@@ -251,6 +273,7 @@ void AssetSync::reset() {
 	deferred_.clear();
 	remote_blobs_.clear();
 	held_code_.clear();
+	unwritten_.clear();
 	dirty_ = true;
 }
 
@@ -259,6 +282,7 @@ void AssetSync::load() {
 	disk_.clear();
 	applied_.clear();
 	held_code_.clear();
+	unwritten_.clear();
 	state_lost_ = false;
 	if (state_file_.is_empty()) return;
 	// The file, else the copy kept from the write before it. A file that is
@@ -268,7 +292,8 @@ void AssetSync::load() {
 	bool usable = state_.load(data, [](const Variant &v) {
 		if (v.get_type() != Variant::DICTIONARY) return false;
 		Dictionary state = v;
-		return int64_t(double(state.get("v", 0.0))) == kStateVersion;
+		int64_t version = int64_t(double(state.get("v", 0.0)));
+		return version == 1 || version == kStateVersion;
 	});
 	if (!usable) {
 		state_lost_ = state_.exists();
@@ -315,6 +340,18 @@ void AssetSync::load() {
 		h.accepted = bool(e[4]);
 		held_code_[String(keys[i])] = h;
 	}
+	Dictionary unwritten = d.get("unwritten", Dictionary());
+	keys = unwritten.keys();
+	for (int64_t i = 0; i < keys.size(); i++) {
+		Array e = unwritten[keys[i]];
+		if (e.size() < 4) continue;
+		Unwritten u;
+		u.hash = std_of(e[0]);
+		u.size = int64_t(double(e[1]));
+		u.seq = int64_t(double(e[2]));
+		u.reason = e[3];
+		unwritten_[String(keys[i])] = u;
+	}
 }
 
 void AssetSync::flush_if_dirty() {
@@ -349,12 +386,22 @@ void AssetSync::flush_if_dirty() {
 		e.push_back(kv.second.accepted);
 		held[kv.first] = e;
 	}
+	Dictionary unwritten;
+	for (const auto &kv : unwritten_) {
+		Array e;
+		e.push_back(str_of(kv.second.hash));
+		e.push_back(kv.second.size);
+		e.push_back(kv.second.seq);
+		e.push_back(kv.second.reason);
+		unwritten[kv.first] = e;
+	}
 	Dictionary d;
 	d["v"] = kStateVersion;
 	d["log"] = log;
 	d["disk"] = disk;
 	d["applied"] = applied;
 	d["held"] = held;
+	d["unwritten"] = unwritten;
 	// A failed write keeps the old file and tries again.
 	if (!state_.save(to_json(d))) dirty_ = true;
 }
@@ -411,12 +458,49 @@ void AssetSync::set_caught_up() {
 	}
 }
 
-bool AssetSync::is_mass_delete(size_t count) const {
+// Any file left in this folder or below it (a moved file, a new one)?
+static bool has_any_file(const String &dir, int depth = 0) {
+	if (!DirAccess::dir_exists_absolute(dir)) return false;
+	if (!DirAccess::get_files_at(dir).is_empty()) return true;
+	if (depth > 16) return true;
+	PackedStringArray dirs = DirAccess::get_directories_at(dir);
+	for (int64_t i = 0; i < dirs.size(); i++) {
+		if (has_any_file(dir.path_join(dirs[i]), depth + 1)) return true;
+	}
+	return false;
+}
+
+bool AssetSync::is_mass_delete(const std::vector<String> &paths) const {
+	size_t count = 0;
+	for (const String &p : paths) {
+		if (!is_sidecar(p)) count++;
+	}
+	if (count == 0) return false;
 	size_t files = 0;
 	for (const auto &kv : log_) {
 		if (!is_sidecar(kv.first) && !is_imported_output(kv.first)) files++;
 	}
-	return count >= kMassDelete || (count >= kMassDeleteMin && count * 5 > files);
+	if (count >= kMassDelete || (count >= kMassDeleteMin && count * 5 > files)) return true;
+	// All of an add-on, or all of a top-level folder with more than one file.
+	std::map<String, size_t> going;
+	for (const String &p : paths) {
+		if (is_sidecar(p)) continue;
+		PackedStringArray parts = p.substr(6).split("/");
+		if (parts.size() < 2) continue;
+		String top = parts[0];
+		if (top.to_lower() == "addons" && parts.size() >= 3) top = parts[0] + "/" + parts[1];
+		going[top]++;
+	}
+	for (const auto &g : going) {
+		String prefix = String("res://") + g.first + "/";
+		size_t in_folder = 0;
+		for (const auto &kv : log_) {
+			if (kv.first.begins_with(prefix) && !is_sidecar(kv.first)) in_folder++;
+		}
+		bool addon = g.first.to_lower().begins_with("addons/");
+		if (g.second == in_folder && (addon || in_folder > 1) && !has_any_file(String("res://") + g.first)) return true;
+	}
+	return false;
 }
 
 void AssetSync::queue_offline_changes() {
@@ -428,7 +512,7 @@ void AssetSync::queue_offline_changes() {
 		const String &path = kv.first;
 		DiskEntry &d = kv.second;
 		auto l = log_.find(path);
-		if (l == log_.end() || d.base.empty() || pending_.count(path) || excluded(path) || held_code_.count(path)) continue;
+		if (l == log_.end() || d.base.empty() || pending_.count(path) || excluded(path) || held_code_.count(path) || unwritten_.count(path)) continue;
 		if (!FileAccess::file_exists(path)) {
 			if (!protected_from_delete(path)) missing.emplace_back(path, l->second.hash);
 			continue;
@@ -449,14 +533,16 @@ void AssetSync::queue_offline_changes() {
 		emit("UpdateAsset", path, p, d.hash);
 	}
 	size_t real = 0;
+	std::vector<String> paths;
 	for (const auto &m : missing) {
 		if (!is_sidecar(m.first)) real++;
+		paths.push_back(m.first);
 	}
-	if (is_mass_delete(real)) {
+	if (is_mass_delete(paths)) {
 		for (const auto &m : missing) held_deletes_.insert(m.first);
 		if (hooks_.notice) {
 			hooks_.notice(String::num_int64(int64_t(real)) +
-							" files are missing since YHDE last ran here. Nothing was deleted for your team: open the YHDE panel to delete them for everyone or restore them.",
+							" files are missing since YHDE last ran here. Nothing was deleted for your team: open the YHDE panel to restore them or delete them for everyone.",
 					1);
 		}
 		return;
@@ -482,7 +568,8 @@ void AssetSync::process(double now) {
 	now_ = now;
 	EditorFileSystem *fs = efs();
 	bool busy = fs && (fs->is_scanning() || fs->is_importing());
-	if (was_busy_ && !busy) {
+	bool became_idle = was_busy_ && !busy;
+	if (became_idle) {
 		progress_ = true; // operations held for the editor's scan can go on
 		if (waiting_.empty()) efs_scan_requested_ = false;
 	}
@@ -524,6 +611,9 @@ void AssetSync::process(double now) {
 	}
 	if (!restoring_.empty()) process_restores();
 	if (!busy) release_accepted_code();
+	// Files that could not be written: again after a while, and whenever the
+	// editor has just finished a scan or import (it may have held them open).
+	if (!busy && caught_up_ && !unwritten_.empty()) retry_unwritten(became_idle);
 }
 
 void AssetSync::scan_step(double now) {
@@ -565,43 +655,58 @@ void AssetSync::scan_step(double now) {
 void AssetSync::finish_pass(double now) {
 	scan_running_ = false;
 	next_scan_ = now + kScanInterval;
-	// Known files that are gone.
+	// Known files that are gone. Only a file this editor had with the log's
+	// bytes, or made itself, can be deleted from here (assets.md): one it
+	// never managed to write is not on this computer yet, not deleted.
+	std::vector<String> deletions;
 	std::vector<String> gone;
+	auto deletable = [&](const String &path) {
+		if (held_deletes_.count(path) || protected_from_delete(path) || is_imported_output(path)) return false;
+		if (held_code_.count(path) || unwritten_.count(path)) return false; // not written yet: its absence is no deletion
+		auto l = log_.find(path);
+		auto p = pending_.find(path);
+		bool known = l != log_.end() || (p != pending_.end() && !p->second.hash.empty());
+		return known && !incoming_.count(key_of(path));
+	};
 	for (const auto &kv : disk_) {
-		if (!scan_seen_.count(kv.first) && !FileAccess::file_exists(kv.first)) gone.push_back(kv.first);
+		if (scan_seen_.count(kv.first) || FileAccess::file_exists(kv.first)) continue;
+		gone.push_back(kv.first);
+		auto p = pending_.find(kv.first);
+		bool proof = !kv.second.base.empty() || (p != pending_.end() && !p->second.hash.empty());
+		if (proof && deletable(kv.first)) deletions.push_back(kv.first);
 	}
+	// The log has them but this computer does not, and never had them as far
+	// as YHDE knows: fetch them again.
+	std::vector<String> missing;
 	for (const auto &kv : log_) {
-		if (!scan_seen_.count(kv.first) && !disk_.count(kv.first) && !excluded(kv.first) && !FileAccess::file_exists(kv.first)) {
-			gone.push_back(kv.first);
-		}
+		const String &path = kv.first;
+		if (scan_seen_.count(path) || excluded(path) || is_imported_output(path) || held_code_.count(path) || unwritten_.count(path)) continue;
+		if (incoming_.count(key_of(path)) || pending_.count(path) || restoring_.count(path) || held_deletes_.count(path)) continue;
+		if (std::find(deletions.begin(), deletions.end(), path) != deletions.end()) continue;
+		if (is_sidecar(path) && !log_.count(key_of(path))) continue;
+		if (!FileAccess::file_exists(path)) missing.push_back(path);
 	}
 	// Deletions the log would see. A whole folder vanishing at once is more
 	// often a mistake (or a wrong checkout) than a decision: it waits for a
 	// person to confirm, instead of emptying everyone's project.
-	std::vector<String> deletions;
-	for (const String &path : gone) {
-		if (held_deletes_.count(path) || protected_from_delete(path) || is_imported_output(path)) continue;
-		if (held_code_.count(path)) continue; // not written yet: its absence is no deletion
-		auto p = pending_.find(path);
-		bool known = log_.count(path) || (p != pending_.end() && !p->second.hash.empty());
-		if (known && !incoming_.count(key_of(path))) deletions.push_back(path);
-	}
-	size_t real = 0;
-	for (const String &path : deletions) {
-		if (!is_sidecar(path)) real++;
-	}
-	if (is_mass_delete(real)) {
+	if (is_mass_delete(deletions)) {
 		for (const String &path : deletions) held_deletes_.insert(path);
 		if (hooks_.notice) {
 			hooks_.notice(String::num_int64(int64_t(held_deletes_.size())) +
-							" files disappeared from your project at once. Nothing was deleted for your team yet: open the YHDE panel to delete them for everyone or restore them.",
+							" files disappeared from your project at once. Nothing was deleted for your team yet: open the YHDE panel to restore them or delete them for everyone.",
 					1);
 		}
 	}
 	for (const String &path : gone) {
 		disk_.erase(path);
 		dirty_ = true;
-		evaluate(path, now, false);
+	}
+	for (const String &path : deletions) {
+		if (!held_deletes_.count(path)) evaluate(path, now, false, 0, Proof::Yes);
+	}
+	for (const String &path : missing) {
+		auto l = log_.find(path);
+		note_unwritten(path, l->second.hash, l->second.size, l->second.seq, "it is not on this computer");
 	}
 	scan_seen_.clear();
 }
@@ -615,7 +720,7 @@ PackedStringArray AssetSync::held_deletions() const {
 void AssetSync::confirm_deletions() {
 	std::set<String> held;
 	held.swap(held_deletes_);
-	for (const String &path : held) evaluate(path, now_, true);
+	for (const String &path : held) evaluate(path, now_, true, 0, Proof::Yes);
 }
 
 void AssetSync::restore_deletions() {
@@ -656,13 +761,16 @@ void AssetSync::process_restores() {
 			++it;
 			continue;
 		}
-		if (write_blob(path, hash, l->second.size)) {
+		String failed = write_blob(path, hash, l->second.size);
+		if (failed.is_empty()) {
 			DiskEntry w;
 			hash_now(path, w);
 			w.base = hash;
 			disk_[path] = w;
 			touched_.push_back(path);
 			wrote = true;
+		} else {
+			note_unwritten(path, hash, l->second.size, l->second.seq, failed);
 		}
 		it = restoring_.erase(it);
 	}
@@ -815,11 +923,14 @@ void AssetSync::on_result(AssetResult &r, double now) {
 
 // Local changes -> operations
 
-void AssetSync::evaluate(const String &path, double now, bool urgent, int depth) {
+void AssetSync::evaluate(const String &path, double now, bool urgent, int depth, Proof proof) {
 	if (!caught_up_ && !urgent) return;
 	if (excluded(path)) return;
 	// Held code is not written: what is on disk is not this person's edit.
 	if (held_code_.count(path)) return;
+	// Neither is a file the log's version could not be written over: sending
+	// it would put old bytes back over a teammate's work.
+	if (unwritten_.count(path)) return;
 	// Imported results travel only with their source's .import (evaluate_companion).
 	if (is_imported_output(path) && !urgent) return;
 	if (incoming_.count(key_of(path))) return; // the log is changing it right now
@@ -845,9 +956,21 @@ void AssetSync::evaluate(const String &path, double now, bool urgent, int depth)
 			pending_.erase(p);
 			return;
 		}
+		if (proof == Proof::Derive) {
+			bool had = d != disk_.end() && !d->second.base.empty();
+			bool made = p != pending_.end() && !p->second.hash.empty();
+			proof = had || made ? Proof::Yes : Proof::No;
+		}
+		if (proof != Proof::Yes) return;
+		// It names the bytes it removes: the newest this editor sent, else the
+		// log's. The server refuses it when the file has changed since.
 		Dictionary payload;
 		payload["s"] = path;
-		payload["o"] = l != log_.end() ? str_of(l->second.hash) : String();
+		if (p != pending_.end() && !p->second.hash.empty()) {
+			payload["o"] = str_of(p->second.hash);
+		} else {
+			payload["o"] = l != log_.end() ? str_of(l->second.hash) : String();
+		}
 		emit("DeleteAsset", path, payload, std::string());
 		return;
 	}
@@ -1037,6 +1160,28 @@ void AssetSync::on_rejected(const Dictionary &payload, const Uuid &client_op_ref
 		remote_blobs_.erase(hash); // re-check and re-upload, then send again
 		auto d = disk_.find(path);
 		if (d != disk_.end()) d->second.mtime = -1;
+		return;
+	}
+	if (code == "Outdated") {
+		// A teammate changed, moved or deleted it first. Their version wins;
+		// this computer's is kept in the replaced files folder.
+		if (!FileAccess::file_exists(path) && hooks_.notice) {
+			hooks_.notice(path.trim_prefix("res://") + String(" was changed by a teammate, so it was not deleted."), 1);
+		}
+		backup(path);
+		if (incoming_.count(key_of(path))) return; // their version is on its way and is written as it arrives
+		auto l = log_.find(path);
+		if (l == log_.end() && !FileAccess::file_exists(path)) return;
+		Unwritten u; // written right away by the next retry
+		if (l != log_.end()) {
+			u.hash = l->second.hash;
+			u.size = l->second.size;
+			u.seq = l->second.seq;
+		}
+		u.reason = l != log_.end() ? "a teammate changed it first" : "a teammate deleted it first";
+		u.next_try = now_;
+		unwritten_[path] = u;
+		dirty_ = true;
 		return;
 	}
 	refused_.insert({ path, hash });
@@ -1298,25 +1443,134 @@ void AssetSync::remove_file(const String &path, bool keep_backup) {
 	}
 }
 
-bool AssetSync::write_blob(const String &path, const std::string &hash, int64_t size) {
+String AssetSync::write_blob(const String &path, const std::string &hash, int64_t size) {
 	String source;
 	String incoming = incoming_path(hash);
-	if (downloaded_.count(hash) && FileAccess::file_exists(incoming)) {
+	bool from_incoming = downloaded_.count(hash) && FileAccess::file_exists(incoming);
+	if (from_incoming) {
 		source = incoming;
-		used_incoming_.insert(hash);
 	} else if (!local_copy(hash, source)) {
-		return false;
+		return "its bytes are not here yet";
 	}
-	if (source == path) return true;
-	DirAccess::make_dir_recursive_absolute(path.get_base_dir());
-	String tmp = path.get_base_dir().path_join(String(".") + path.get_file() + ".yhde-tmp");
-	if (DirAccess::copy_absolute(source, tmp) != OK) return false;
-	if (FileAccess::file_exists(path)) DirAccess::remove_absolute(path);
-	if (DirAccess::rename_absolute(tmp, path) != OK) {
+	if (source == path) return String();
+	String dir = path.get_base_dir();
+	if (DirAccess::make_dir_recursive_absolute(dir) != OK && !DirAccess::dir_exists_absolute(dir)) {
+		return "its folder could not be made";
+	}
+	String tmp = dir.path_join(String(".") + path.get_file() + ".yhde-tmp");
+	Error err = DirAccess::copy_absolute(source, tmp);
+	if (err != OK) {
 		DirAccess::remove_absolute(tmp);
-		return false;
+		return String("the disk may be full or the folder read-only (") + UtilityFunctions::error_string(err) + ")";
 	}
-	return true;
+	// The old file stays until the new one is in place: a failed write never
+	// leaves this computer with neither.
+	String old = dir.path_join(String(".") + path.get_file() + ".old.yhde-tmp");
+	bool had = FileAccess::file_exists(path);
+	if (had && DirAccess::rename_absolute(path, old) != OK) {
+		DirAccess::remove_absolute(tmp);
+		return "the file is in use or read-only";
+	}
+	if (DirAccess::rename_absolute(tmp, path) != OK) {
+		if (had) DirAccess::rename_absolute(old, path);
+		DirAccess::remove_absolute(tmp);
+		return "the file is in use or read-only";
+	}
+	if (had) DirAccess::remove_absolute(old);
+	if (from_incoming) used_incoming_.insert(hash);
+#ifdef YHDE_DIAGNOSTICS
+	if (stop_after_writes_ > 0 && --stop_after_writes_ == 0) std::_Exit(3);
+#endif
+	return String();
+}
+
+void AssetSync::note_unwritten(const String &path, const std::string &hash, int64_t size, int64_t seq, const String &reason) {
+	auto it = unwritten_.find(path);
+	bool fresh = it == unwritten_.end() || it->second.hash != hash;
+	Unwritten &u = unwritten_[path];
+	if (fresh) u.tries = 0;
+	u.hash = hash;
+	u.size = size;
+	u.seq = seq;
+	u.reason = reason;
+	u.tries++;
+	u.next_try = now_ + std::min(60.0, double(1 << std::min(u.tries, 6)));
+	dirty_ = true;
+	if (fresh && hooks_.notice) {
+		hooks_.notice(path.trim_prefix("res://") + String(" could not be written here: ") + reason +
+						". Nothing was changed for your team, and YHDE keeps trying.",
+				1);
+	}
+}
+
+void AssetSync::retry_unwritten(bool all) {
+	bool wrote = false;
+	std::vector<String> paths;
+	for (const auto &kv : unwritten_) {
+		if (all || now_ >= kv.second.next_try) paths.push_back(kv.first);
+	}
+	for (const String &path : paths) {
+		auto it = unwritten_.find(path);
+		if (it == unwritten_.end()) continue;
+		Unwritten u = it->second;
+		if (held_code_.count(path) || pending_.count(path) || incoming_.count(key_of(path))) continue;
+		if (u.hash.empty()) {
+			remove_file(path, false);
+			if (FileAccess::file_exists(path)) {
+				note_unwritten(path, u.hash, 0, u.seq, u.reason);
+			} else {
+				unwritten_.erase(path);
+				disk_.erase(path);
+				touched_.push_back(path);
+				wrote = true;
+			}
+			continue;
+		}
+		if (!have_bytes(u.hash)) {
+			fetch(u.hash, u.size);
+			continue;
+		}
+		// Sidecars first, so the editor keeps the file's uid.
+		if (!is_sidecar(path) && (unwritten_.count(path + String(".import")) || unwritten_.count(path + String(".uid")))) continue;
+		String failed = write_blob(path, u.hash, u.size);
+		if (!failed.is_empty()) {
+			note_unwritten(path, u.hash, u.size, u.seq, failed);
+			continue;
+		}
+		unwritten_.erase(path);
+		DiskEntry w;
+		hash_now(path, w);
+		w.base = u.hash;
+		disk_[path] = w;
+		touched_.push_back(path);
+		if (is_document_path(path)) replaced_.emplace_back(path, u.seq);
+		dirty_ = true;
+		wrote = true;
+	}
+	if (wrote) finish_batch();
+}
+
+Array AssetSync::unwritten() const {
+	Array out;
+	for (const auto &kv : unwritten_) {
+		Dictionary e;
+		e["path"] = kv.first;
+		e["reason"] = kv.second.reason;
+		e["exists"] = FileAccess::file_exists(kv.first);
+		out.push_back(e);
+	}
+	return out;
+}
+
+void AssetSync::keep_local(const String &path) {
+	auto it = unwritten_.find(path);
+	if (it == unwritten_.end() || !FileAccess::file_exists(path)) return;
+	unwritten_.erase(it);
+	dirty_ = true;
+	DiskEntry d;
+	if (!hash_now(path, d)) return;
+	disk_[path] = d; // a local change: shared against the log's current version
+	evaluate(path, now_, true);
 }
 
 bool AssetSync::can_skip_version(const RemoteOp &op) const {
@@ -1396,13 +1650,21 @@ void AssetSync::apply(const RemoteOp &op) {
 		held_code_.erase(path);
 	}
 
+	String from_whom = String(" (#") + String::num_int64(op.seq) + " from " + op.actor + ")";
 	String subject;
 	if (op.type == "DeleteAsset") {
 		auto d = disk_.find(path);
 		bool local_change = FileAccess::file_exists(path) &&
 				(d == disk_.end() || d->second.base.empty() || int64_t(FileAccess::get_modified_time(path)) != d->second.mtime);
+		CrashLog::note(String("Deleting ") + path + from_whom);
 		remove_file(path, local_change);
 		disk_.erase(path);
+		unwritten_.erase(path);
+		if (FileAccess::file_exists(path)) {
+			// Still here (locked, read-only): it must not come back to the team
+			// as a new file. Removed again later.
+			note_unwritten(path, std::string(), 0, op.seq, "it could not be deleted here (in use or read-only)");
+		}
 		touched_.push_back(path);
 		subject = String("Deleted ") + path.get_file();
 	} else {
@@ -1421,6 +1683,7 @@ void AssetSync::apply(const RemoteOp &op) {
 		if (exists && current.hash == hash) {
 			current.base = hash;
 			disk_[path] = current;
+			unwritten_.erase(path);
 		} else {
 			bool local_change = exists && (current.base.empty() || d == disk_.end());
 			if (path == "res://project.godot" && exists) {
@@ -1433,16 +1696,32 @@ void AssetSync::apply(const RemoteOp &op) {
 				auto pe = disk_.find(path);
 				if (pe != disk_.end()) pe->second.base = hash;
 			} else {
+				bool moved = false;
 				if (op.type == "MoveAsset" && FileAccess::file_exists(from) && std_of(FileAccess::get_sha256(from)) == hash && !exists) {
 					DirAccess::make_dir_recursive_absolute(path.get_base_dir());
-					DirAccess::rename_absolute(from, path);
-				} else {
+					moved = DirAccess::rename_absolute(from, path) == OK;
+				}
+				if (!moved) {
 					if (local_change) backup(path);
-					if (!write_blob(path, hash, size)) {
-						if (hooks_.notice) hooks_.notice(String("Could not write ") + path, 2);
+					CrashLog::note(String("Writing ") + path + from_whom);
+					String failed = write_blob(path, hash, size);
+					if (!failed.is_empty()) {
+						// Not lost: kept as not written here, tried again, and never
+						// taken for a deletion (assets.md).
+						if (exists) {
+							DiskEntry now;
+							if (hash_now(path, now)) {
+								now.base = d != disk_.end() && d->second.hash == now.hash ? d->second.base : std::string();
+								disk_[path] = now;
+							}
+						} else {
+							disk_.erase(path);
+						}
+						note_unwritten(path, hash, size, op.seq, failed);
 						return;
 					}
 				}
+				unwritten_.erase(path);
 				DiskEntry w;
 				hash_now(path, w);
 				w.base = hash;
@@ -1568,7 +1847,10 @@ void AssetSync::finish_batch() {
 		}
 		// Godot imports in dependency order (textures before the models and
 		// scenes that use them) within one call.
-		if (!reimport.is_empty()) fs->reimport_files(reimport);
+		if (!reimport.is_empty()) {
+			CrashLog::note(String("Importing ") + String::num_int64(reimport.size()) + " files: " + reimport[0] + (reimport.size() > 1 ? String(" ...") : String()), true);
+			fs->reimport_files(reimport);
+		}
 	}
 	for (const String &s : prebuilt) {
 		ResourceLoader *loader = ResourceLoader::get_singleton();
@@ -1594,10 +1876,12 @@ void AssetSync::finish_batch() {
 		Ref<Script> script = cached;
 		Ref<Script> fresh_script = fresh;
 		if (script.is_valid() && fresh_script.is_valid()) {
+			CrashLog::note(String("Reloading script ") + s, true);
 			script->set_source_code(fresh_script->get_source_code());
 			script->reload(true);
 			scripts = true;
 		} else if (cached->get_class() == fresh->get_class()) {
+			CrashLog::note(String("Reloading ") + s, true);
 			cached->copy_from_resource(fresh);
 			cached->emit_changed();
 		}
@@ -1786,7 +2070,7 @@ void AssetSync::release_accepted_code() {
 		}
 		for (const String &sc : sidecars) {
 			const LogEntry &sl = log_[sc];
-			if (!write_blob(sc, sl.hash, sl.size)) continue;
+			if (!write_blob(sc, sl.hash, sl.size).is_empty()) continue;
 			DiskEntry sw;
 			hash_now(sc, sw);
 			sw.base = sl.hash;
@@ -1798,7 +2082,7 @@ void AssetSync::release_accepted_code() {
 		bool local_change = exists && (d == disk_.end() || d->second.base.empty() ||
 											  int64_t(FileAccess::get_modified_time(path)) != d->second.mtime);
 		if (local_change) backup(path);
-		if (!write_blob(path, h.hash, h.size)) {
+		if (!write_blob(path, h.hash, h.size).is_empty()) {
 			++it;
 			continue;
 		}
@@ -1864,6 +2148,7 @@ Dictionary AssetSync::status() const {
 	d["held_deletes"] = int64_t(held_deletes_.size());
 	d["held_code"] = int64_t(held_code_.size());
 	d["restoring"] = int64_t(restoring_.size());
+	d["unwritten"] = int64_t(unwritten_.size());
 	return d;
 }
 

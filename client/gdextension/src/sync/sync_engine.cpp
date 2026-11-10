@@ -1,5 +1,7 @@
 #include "sync/sync_engine.h"
 
+#include "core/crash_log.h"
+
 #include <godot_cpp/classes/animation.hpp>
 #include <godot_cpp/classes/animation_library.hpp>
 #include <godot_cpp/classes/animation_mixer.hpp>
@@ -1013,6 +1015,7 @@ void SyncEngine::apply_scene_ops(const String &path, std::vector<RemoteOp *> &op
 		for (RemoteOp *op : live) hooks_.applied(path, op->seq, true);
 		std::vector<RemoteOp *> rest(ops.begin() + long(split), ops.end());
 		apply_to_file(path, rest);
+		CrashLog::note(String("Reloading scene ") + path, true);
 		EditorInterface::get_singleton()->reload_scene_from_path(path);
 		refresh_requested_ = true;
 		return;
@@ -1144,6 +1147,7 @@ void SyncEngine::on_file_replaced(const String &path) {
 			(void)root;
 			// Its tab is rebuilt from the new file and adopted again.
 			if (hooks_.reloading) hooks_.reloading(path);
+			CrashLog::note(String("Reloading scene ") + path, true);
 			EditorInterface::get_singleton()->reload_scene_from_path(path);
 			refresh_requested_ = true;
 			return;
@@ -1246,6 +1250,7 @@ void SyncEngine::finish_instance_refresh(std::vector<InstanceTarget> &targets) {
 			// file, the editor's own way (a fresh load everywhere gives the same
 			// result; what was only in memory is replayed from the log).
 			if (hooks_.reloading) hooks_.reloading(t.scene);
+			CrashLog::note(String("Reloading scene ") + t.scene, true);
 			EditorInterface::get_singleton()->reload_scene_from_path(t.scene);
 			refresh_requested_ = true;
 			continue;
